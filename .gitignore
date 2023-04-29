@@ -1,0 +1,35 @@
+# vscode-extension
+out
+dist/
+node_modules
+.vscode-test/
+npm-debug.log
+mock-debug.txt
+*.vsix
+.DS_Store
+
+# haskell
+.stack-work/
+dist-newstyle/
+cabal.project.local
+.ghc.environment.*
+*.o
+*.hi
+
+# nix
+result*
+
+# osx
+.DS_Store
+
+# emacs
+*~
+
+# tags
+TAGS
+main
+
+# C
+./main
+*.dSYM
+a.out
