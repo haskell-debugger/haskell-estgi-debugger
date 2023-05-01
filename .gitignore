@@ -32,4 +32,10 @@ main
 # C
 ./main
 *.dSYM
-a.out
+
+# stg
+*.fullpak
+*.modpak
+
+# tags
+tags

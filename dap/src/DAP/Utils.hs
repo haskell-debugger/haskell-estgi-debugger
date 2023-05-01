@@ -1,3 +1,8 @@
+{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE OverloadedStrings   #-}
@@ -13,7 +18,7 @@
 ----------------------------------------------------------------------------
 module DAP.Utils where
 ----------------------------------------------------------------------------
-import GHC.Generics (Generic, Rep)
+import           GHC.Generics               (Generic, Rep)
 import           Data.Aeson                 ( ToJSON(toJSON), Value, fieldLabelModifier
                                             , genericToJSON, genericParseJSON, fieldLabelModifier
                                             , defaultOptions, GToJSON, GFromJSON, Zero, Options
@@ -96,9 +101,10 @@ genericToJSONWithModifier
   :: forall a . (Generic a, GToJSON Zero (Rep a), Typeable a)
   => a -> Value
 genericToJSONWithModifier
-  = genericToJSON defaultOptions {
-     fieldLabelModifier = modifier (Proxy @a)
-   }
+  = genericToJSON defaultOptions
+  { fieldLabelModifier = modifier (Proxy @a)
+  , constructorTagModifier = modifier (Proxy @a)
+  }
 ----------------------------------------------------------------------------
 -- | Used as a fieldLabelModifier when generating aeson parsers
 -- >>> getName (Proxy @Int)
@@ -112,4 +118,8 @@ genericParseJSONWithModifier
   { fieldLabelModifier = modifier (Proxy @a)
   , constructorTagModifier = modifier (Proxy @a)
   }
+----------------------------------------------------------------------------
+-- | Log formatting util
+withBraces :: BL8.ByteString -> BL8.ByteString
+withBraces x  = "[" <> x <> "]"
 ----------------------------------------------------------------------------

@@ -46,7 +46,7 @@ export function runDebugger (context: vscode.ExtensionContext, factory: MockDebu
 	});
 
 	vscode.debug.onDidReceiveDebugSessionCustomEvent((e) => {
-		console.log(e, 'custom event received hit')
+		console.log(e, 'custom event received hit');
 	});
 
 }

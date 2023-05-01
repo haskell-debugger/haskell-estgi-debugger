@@ -1,0 +1,29 @@
+resolver: lts-20.18
+
+packages:
+  - '.'
+
+extra-deps:
+  - souffle-haskell-3.4.0
+  - type-errors-pretty-0.0.1.2@sha256:9042b64d1ac2f69aa55690576504a2397ebea8a6a55332242c88f54027c7eb57,2781
+  - async-pool-0.9.1@sha256:4015140f896c3f1652b06a679b0ade2717d05557970c283ea2c372a71be2a6a1,1605
+
+  - git: https://github.com/TeofilC/digest
+    commit: ac9616b94cb8c4a9e07188d19979a6225ebd5a10
+
+  - git: https://github.com/grin-compiler/ghc-whole-program-compiler-project
+    commit: 9d7a96a0b831f980d8c9d5a30a9185b64fbbfa31
+    subdirs:
+      - external-stg
+      - external-stg-syntax
+      - external-stg-interpreter
+
+flags:
+  digest:
+    pkg-config: false
+
+nix:
+  enable: false
+  packages: [ zlib bzip2 ]
+
+allow-newer: true

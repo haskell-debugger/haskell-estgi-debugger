@@ -1,0 +1,6 @@
+packages: *
+
+package hello
+  ghc-options:
+    -fplugin-library=/nix/store/871x1xb4f2pxdx2py46q2qr52vzy2ykf-wpc-plugin-1.0.1/lib/ghc-9.6.1/lib/libwpc-plugin.so;wpc-plugin-unit;WPC.Plugin;[]
+    -fplugin-trustworthy
