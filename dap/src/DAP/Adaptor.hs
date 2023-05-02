@@ -13,6 +13,7 @@
 {-# LANGUAGE RecordWildCards            #-}
 {-# LANGUAGE DeriveAnyClass             #-}
 {-# LANGUAGE DeriveGeneric              #-}
+{-# LANGUAGE LambdaCase                 #-}
 ----------------------------------------------------------------------------
 module DAP.Adaptor
   ( debugMessage
@@ -21,13 +22,29 @@ module DAP.Adaptor
   , sendSuccesfulEvent
   , getServerCapabilities
   , setBody
+  , withConnectionLock
+  , getArguments
+  , registerNewDebugSession
+  , withDebugSession
+  , getDebugSessionId
+  , destroyDebugSession
+  -- * Logging
+  , logWarn
+  , logError
+  , logInfo
+  , logger
   ) where
 ----------------------------------------------------------------------------
+import           Control.Concurrent.Lifted  ( fork, killThread )
+import           Control.Exception          ( throwIO )
 import           Control.Concurrent.STM     ( atomically, readTVarIO, modifyTVar' )
 import           Control.Monad              ( when )
 import           Control.Monad.State        ( MonadIO(liftIO), gets, modify' )
+import           Data.Aeson                 ( FromJSON, Result (..), fromJSON )
 import           Data.Aeson.Encode.Pretty   ( encodePretty )
 import           Data.Aeson.Types           ( object, Key, KeyValue((.=)), ToJSON )
+import           Data.IORef                 ( atomicModifyIORef', readIORef, atomicWriteIORef )
+import           Data.Text                  ( unpack, Text )
 import           Network.Socket             ( SockAddr )
 import           System.IO                  ( Handle )
 import qualified Data.ByteString.Lazy.Char8 as BL8
@@ -38,26 +55,51 @@ import           DAP.Types
 import           DAP.Utils
 import           DAP.Internal
 ----------------------------------------------------------------------------
+-- | Meant for internal consumption
+logDebug :: DebugStatus -> BL8.ByteString -> AdaptorClient app ()
+logDebug d = logWithAddr DEBUG (Just d)
+----------------------------------------------------------------------------
+logWarn :: BL8.ByteString -> AdaptorClient app ()
+logWarn msg = logWithAddr WARN Nothing (withBraces msg)
+----------------------------------------------------------------------------
+logError :: BL8.ByteString -> AdaptorClient app ()
+logError msg = logWithAddr ERROR Nothing (withBraces msg)
+----------------------------------------------------------------------------
+logInfo :: BL8.ByteString -> AdaptorClient app ()
+logInfo msg = logWithAddr INFO Nothing (withBraces msg)
+----------------------------------------------------------------------------
+-- | Meant for internal consumption
 debugMessage :: BL8.ByteString -> AdaptorClient app ()
 debugMessage msg = do
   shouldLog <- getDebugLogging
+  addr <- getAddress
   liftIO
     $ when shouldLog
+    $ logger DEBUG addr Nothing msg
+----------------------------------------------------------------------------
+-- | Meant for external consumption
+logWithAddr :: Level -> Maybe DebugStatus -> BL8.ByteString -> AdaptorClient app ()
+logWithAddr level status msg = do
+  addr <- getAddress
+  liftIO (logger level addr status msg)
+----------------------------------------------------------------------------
+-- | Meant for external consumption
+logger :: Level -> SockAddr -> Maybe DebugStatus -> BL8.ByteString -> IO ()
+logger level addr maybeDebug msg = do
+  liftIO
     $ withGlobalLock
-    $ BL8.putStrLn msg
+    $ BL8.putStrLn formatted
+  where
+    formatted
+      = BL8.concat
+      [ withBraces $ BL8.pack (show addr)
+      , withBraces $ BL8.pack (show level)
+      , maybe mempty (withBraces . BL8.pack . show) maybeDebug
+      , msg
+      ]
 ----------------------------------------------------------------------------
 getDebugLogging :: AdaptorClient app Bool
 getDebugLogging = gets (debugLogging . adaptorServerConfig)
-----------------------------------------------------------------------------
-sendMessage :: ToJSON event => SockAddr -> Handle -> event -> AdaptorClient app ()
-sendMessage addr handle evt = do
-  let msg = encodeBaseProtocolMessage evt
-  shouldLog <- getDebugLogging
-  debugMessage $ BL8.intercalate "\n"
-    [ BL8.pack ("[SENT][" <> show addr <> "]")
-    , encodePretty evt
-    ]
-  liftIO (BS.hPutStr handle msg)
 ----------------------------------------------------------------------------
 getServerCapabilities :: AdaptorClient app Capabilities
 getServerCapabilities = gets (serverCapabilities . adaptorServerConfig)
@@ -70,31 +112,77 @@ getHandle = gets handle
 ----------------------------------------------------------------------------
 getNextSeqNum :: AdaptorClient app Seq
 getNextSeqNum = do
-  modify' $ \s -> s { seqNum = seqNum s + 1 }
-  gets seqNum
+  ref <- gets seqRef
+  liftIO $ atomicModifyIORef' ref $ \x -> (x, x + 1)
 ----------------------------------------------------------------------------
 getRequestSeqNum :: AdaptorClient app Seq
 getRequestSeqNum = gets (requestSeqNum . request)
 ----------------------------------------------------------------------------
-getSessionId :: AdaptorClient app (Maybe SessionId)
-getSessionId = gets sessionId
+getDebugSessionId :: AdaptorClient app (Maybe SessionId)
+getDebugSessionId = liftIO . readIORef =<< gets sessionId
 ----------------------------------------------------------------------------
-registerNewSession :: SessionId -> app -> AdaptorClient app ()
-registerNewSession k v = do
+setDebugSessionId :: SessionId -> AdaptorClient app ()
+setDebugSessionId session = do
+  ref <- gets sessionId
+  liftIO (atomicWriteIORef ref (Just session))
+----------------------------------------------------------------------------
+registerNewDebugSession
+  :: SessionId
+  -> app
+  -> AdaptorClient app ()
+  -- ^ Long running operation, meant to be used as a sink for
+  -- the debugger to emit events and for the adaptor to forward to the editor
+  -- This function should be in a 'forever' loop waiting on the read end of
+  -- a debugger channel.
+  -> AdaptorClient app ()
+registerNewDebugSession k v action = do
   store <- gets adaptorAppStore
-  liftIO . atomically $ modifyTVar' store (H.insert k v)
+  tid <- fork (resetAdaptorStatePayload >> action)
+  liftIO . atomically $ modifyTVar' store (H.insert k (tid, v))
+  setDebugSessionId k
+  logInfo $ BL8.pack $ "Registered new debug session: " <> unpack k
 ----------------------------------------------------------------------------
-withSession :: (app -> AdaptorClient app ()) -> AdaptorClient app ()
-withSession continuation = do
-  maybeSessionId <- getSessionId
-  case maybeSessionId of
+withDebugSession :: (app -> AdaptorClient app ()) -> AdaptorClient app ()
+withDebugSession continuation = do
+  getDebugSessionId >>= \case
     Nothing -> sessionNotFound
     Just sessionId -> do
       appStore <- liftIO . readTVarIO =<< getAppStore
-      maybe appNotFound continuation (H.lookup sessionId appStore)
+      case H.lookup sessionId appStore of
+        Nothing ->
+          appNotFound sessionId
+        Just (_, state) ->
+          continuation state
     where
-      appNotFound = pure ()
-      sessionNotFound = pure ()
+      appNotFound sessionId = do
+        logError "A Session exists but no debugger has been registered"
+        let err = concat
+              [ "SessionID: " <> unpack sessionId
+              , "has no corresponding Debugger registered"
+              ]
+        liftIO $ throwIO (DebugSessionIdException err)
+      sessionNotFound =
+        logWarn "No Debug Session has started"
+----------------------------------------------------------------------------
+-- | Whenever a debug Session ends (cleanly or otherwise) this function
+-- will remove the local debugger communication state from the global state
+----------------------------------------------------------------------------
+destroyDebugSession :: AdaptorClient app ()
+destroyDebugSession = do
+  getDebugSessionId >>= \case
+    Nothing -> sessionNotFound
+    Just sessionId -> do
+      appStoreTVar <- getAppStore
+      appStore <- liftIO (readTVarIO appStoreTVar)
+      case H.lookup sessionId appStore of
+        Nothing -> sessionNotFound
+        Just (tid, state) -> do
+          killThread tid
+          liftIO . atomically $ modifyTVar' appStoreTVar (H.delete sessionId)
+          logInfo $ BL8.pack $ "SessionId " <> unpack sessionId <> " ended"
+  where
+    sessionNotFound =
+      logWarn "No Debug Session has started"
 ----------------------------------------------------------------------------
 getAppStore :: AdaptorClient app (AppStore app)
 getAppStore = gets adaptorAppStore
@@ -130,10 +218,23 @@ send action = do
   payload <- object <$> gets adaptorPayload
 
   -- Send payload to client from debug adaptor
-  sendMessage address handle payload
+  writeToHandle address handle payload
 
   -- Reset payload each time a send occurs
   resetAdaptorStatePayload
+----------------------------------------------------------------------------
+-- | Writes payload to the given 'Handle' using the local connection lock
+----------------------------------------------------------------------------
+writeToHandle
+  :: ToJSON event
+  => SockAddr
+  -> Handle
+  -> event
+  -> AdaptorClient app ()
+writeToHandle addr handle evt = do
+  let msg = encodeBaseProtocolMessage evt
+  logDebug SENT ("\n" <> encodePretty evt)
+  withConnectionLock (BS.hPutStr handle msg)
 ----------------------------------------------------------------------------
 -- | Resets Adaptor's payload
 ----------------------------------------------------------------------------
@@ -214,4 +315,30 @@ setField key value = do
     adaptorState
     { adaptorPayload = (key .= value) : payload
     }
+----------------------------------------------------------------------------
+withConnectionLock
+  :: IO ()
+  -> AdaptorClient app ()
+withConnectionLock action = do
+  lock <- gets handleLock
+  liftIO (withLock lock action)
+----------------------------------------------------------------------------
+-- | Attempt to parse arguments from the Request
+----------------------------------------------------------------------------
+getArguments
+  :: (Show value, FromJSON value)
+  => AdaptorClient app value
+getArguments = do
+  maybeArgs <- gets (args . request)
+  let msg = "No args found for this message"
+  case maybeArgs of
+    Nothing -> do
+      logError (BL8.pack msg)
+      liftIO $ throwIO (ExpectedArguments msg)
+    Just val ->
+      case fromJSON val of
+        Success r -> pure r
+        x -> do
+          logError (BL8.pack (show x))
+          liftIO $ throwIO (ParseException (show x))
 ----------------------------------------------------------------------------

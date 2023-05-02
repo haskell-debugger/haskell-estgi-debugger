@@ -7,7 +7,7 @@
     "vscode": "^1.77.0"
   },
   "categories": [
-    "Other"
+    "Debuggers"
   ],
   "activationEvents": [ "onDebug", "onDebugResolve:dap-extension" ],
   "main": "./out/extension.js",
@@ -16,9 +16,9 @@
       {
         "type": "dap-extension",
         "languages": [
-          "C"
+          "Haskell"
         ],
-        "program": "${workspaceFolder}/a.out",
+        "program": "${workspaceFolder}/test.fullpak",
         "label": "dap-extension",
         "configurationAttributes": {
           "attach": {
@@ -26,8 +26,8 @@
             "properties": {
               "program": {
                 "type": "string",
-                "description": "Absolute path to the C program compiled with debugging (-g)",
-                "default": "${workspaceFolder}/a.out"
+                "description": "Absolute path to the program",
+                "default": "${workspaceFolder}/test.fullpak"
               }
             }
           }
@@ -36,7 +36,7 @@
           {
             "type": "dap-extension",
             "request": "attach",
-            "program": "${workspaceFolder}/a.out"
+            "program": "${workspaceFolder}/test.fullpak"
           }
         ]
       }

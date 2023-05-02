@@ -17,33 +17,48 @@
 module DAP.Response
   ( -- * Response message API
     sendAttachResponse
-  , sendModulesResponse
-  , sendBreakpointsLocationResponse
-  , sendSetDataBreakpointsResponse
-  , sendSetBreakpointsResponse
-  , sendSetFunctionBreakpointsResponse
-  , sendSetExceptionBreakpointsResponse
-  , sendSetInstructionBreakpointsResponse
-  , sendContinueResponse
+  , sendBreakpointLocationsResponse
+  , sendCompletionsResponse
   , sendConfigurationDoneResponse
-  , sendLaunchResponse
-  , sendRestartResponse
+  , sendContinueResponse
+  , sendDataBreakpointInfoResponse
+  , sendDisassembleResponse
   , sendDisconnectResponse
-  , sendTerminateResponse
-  , sendNextResponse
-  , sendStepInResponse
-  , sendStepOutResponse
-  , sendStepBackResponse
-  , sendReverseContinueResponse
-  , sendRestartFrameResponse
+  , sendEvaluateResponse
+  , sendExceptionInfoResponse
   , sendGotoResponse
-  , sendPauseResponse
-  , sendInitializedResponse
-  , sendThreadsResponse
-  , sendTerminateThreadsResponse
-  , sendStackTraceResponse
-  , sendSourceResponse
+  , sendGotoTargetsResponse
+  , sendInitializeResponse
+  , sendLaunchResponse
   , sendLoadedSourcesResponse
+  , sendModulesResponse
+  , sendNextResponse
+  , sendPauseResponse
+  , sendReadMemoryResponse
+  , sendRestartResponse
+  , sendRestartFrameResponse
+  , sendReverseContinueResponse
+  , sendScopesResponse
+  , sendSetBreakpointsResponse
+  , sendSetDataBreakpointsResponse
+  , sendSetExceptionBreakpointsResponse
+  , sendSetExpressionResponse
+  , sendSetFunctionBreakpointsResponse
+  , sendSetInstructionBreakpointsResponse
+  , sendSetVariableResponse
+  , sendSourceResponse
+  , sendStackTraceResponse
+  , sendStepBackResponse
+  , sendStepInResponse
+  , sendStepInTargetsResponse
+  , sendStepOutResponse
+  , sendTerminateResponse
+  , sendTerminateThreadsResponse
+  , sendThreadsResponse
+  , sendVariablesResponse
+  , sendWriteMemoryResponse
+  , sendRunInTerminalResponse
+  , sendStartDebuggingResponse
   ) where
 ----------------------------------------------------------------------------
 import           DAP.Adaptor
@@ -54,10 +69,10 @@ sendAttachResponse :: AdaptorClient app ()
 sendAttachResponse = sendSuccesfulEmptyResponse
 ----------------------------------------------------------------------------
 -- | BreakpointLocationResponse has no body by default
-sendBreakpointsLocationResponse
+sendBreakpointLocationsResponse
   :: [BreakpointLocation]
   -> AdaptorClient app ()
-sendBreakpointsLocationResponse
+sendBreakpointLocationsResponse
   = sendSuccesfulResponse
   . setBody
   . Breakpoints
@@ -170,13 +185,10 @@ sendRestartFrameResponse
   :: AdaptorClient app ()
 sendRestartFrameResponse = sendSuccesfulEmptyResponse
 ----------------------------------------------------------------------------
--- | InitializedReponse
--- <https://microsoft.github.io/debug-adapter-protocol/specification#Requests_Initialize>
--- 'Capabilities' is present in the `ServerConfig` when the DAP server starts
--- This function reads the global 'Capabilities' from the 'ServerConfig'
-sendInitializedResponse
+-- | InitializeReponse
+sendInitializeResponse
   :: AdaptorClient app ()
-sendInitializedResponse = do
+sendInitializeResponse = do
   capabilities <- getServerCapabilities
   sendSuccesfulResponse (setBody capabilities)
 ----------------------------------------------------------------------------
@@ -184,6 +196,11 @@ sendInitializedResponse = do
 sendGotoResponse
   :: AdaptorClient app ()
 sendGotoResponse = sendSuccesfulEmptyResponse
+----------------------------------------------------------------------------
+-- | GotoTargetsResponse
+sendGotoTargetsResponse
+  :: AdaptorClient app ()
+sendGotoTargetsResponse = sendSuccesfulEmptyResponse
 ----------------------------------------------------------------------------
 -- | PauseResponse
 sendPauseResponse
@@ -209,4 +226,46 @@ sendThreadsResponse = sendSuccesfulResponse . setBody . ThreadsResponse
 ----------------------------------------------------------------------------
 sendLoadedSourcesResponse :: [Source] -> AdaptorClient app ()
 sendLoadedSourcesResponse = sendSuccesfulResponse . setBody . LoadedSourcesResponse
+----------------------------------------------------------------------------
+sendWriteMemoryResponse :: WriteMemoryResponse -> AdaptorClient app ()
+sendWriteMemoryResponse = sendSuccesfulResponse . setBody
+----------------------------------------------------------------------------
+sendReadMemoryResponse :: ReadMemoryResponse -> AdaptorClient app ()
+sendReadMemoryResponse = sendSuccesfulResponse . setBody
+----------------------------------------------------------------------------
+sendCompletionsResponse :: CompletionsResponse -> AdaptorClient app ()
+sendCompletionsResponse = sendSuccesfulResponse . setBody
+----------------------------------------------------------------------------
+sendDataBreakpointInfoResponse :: DataBreakpointInfoResponse -> AdaptorClient app ()
+sendDataBreakpointInfoResponse = sendSuccesfulResponse . setBody
+----------------------------------------------------------------------------
+sendDisassembleResponse :: DisassembleResponse -> AdaptorClient app ()
+sendDisassembleResponse = sendSuccesfulResponse . setBody
+----------------------------------------------------------------------------
+sendEvaluateResponse :: EvaluateResponse -> AdaptorClient app ()
+sendEvaluateResponse = sendSuccesfulResponse . setBody
+----------------------------------------------------------------------------
+sendExceptionInfoResponse :: ExceptionInfoResponse -> AdaptorClient app ()
+sendExceptionInfoResponse = sendSuccesfulResponse . setBody
+----------------------------------------------------------------------------
+sendScopesResponse :: ScopesResponse -> AdaptorClient app ()
+sendScopesResponse = sendSuccesfulResponse . setBody
+----------------------------------------------------------------------------
+sendSetExpressionResponse :: SetExpressionResponse -> AdaptorClient app ()
+sendSetExpressionResponse = sendSuccesfulResponse . setBody
+----------------------------------------------------------------------------
+sendSetVariableResponse :: SetVariableResponse -> AdaptorClient app ()
+sendSetVariableResponse = sendSuccesfulResponse . setBody
+----------------------------------------------------------------------------
+sendStepInTargetsResponse :: StepInTargetsResponse -> AdaptorClient app ()
+sendStepInTargetsResponse = sendSuccesfulResponse . setBody
+----------------------------------------------------------------------------
+sendVariablesResponse :: VariablesResponse -> AdaptorClient app ()
+sendVariablesResponse = sendSuccesfulResponse . setBody
+----------------------------------------------------------------------------
+sendRunInTerminalResponse :: RunInTerminalResponse -> AdaptorClient app ()
+sendRunInTerminalResponse = sendSuccessfulResponse . setBody
+----------------------------------------------------------------------------
+sendStartDebuggingResponse :: AdaptorClient app ()
+sendStartDebuggingResponse = sendSuccesfulEmptyResponse
 ----------------------------------------------------------------------------

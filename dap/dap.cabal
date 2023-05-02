@@ -25,8 +25,10 @@ executable dap
       base < 5
     , dap
     , bytestring
-    , hgdbmi
+    , external-stg-interpreter
+    , lifted-base
     , network
+    , unagi-chan
     , unordered-containers
     , aeson
     , text
@@ -53,12 +55,15 @@ library
     , aeson-pretty
     , base < 5
     , bytestring
+    , lifted-base
     , mtl
+    , monad-control
     , network
     , network-simple
     , stm
     , text
     , time
+    , transformers-base
     , unordered-containers
   hs-source-dirs:
     src

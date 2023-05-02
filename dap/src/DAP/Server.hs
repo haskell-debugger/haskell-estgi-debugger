@@ -20,6 +20,9 @@ module DAP.Server
   ( runDAPServer
   ) where
 ----------------------------------------------------------------------------
+import           Control.Monad              (when)
+import           Data.IORef                 ( newIORef, atomicWriteIORef )
+import           Control.Concurrent.MVar    ( newMVar )
 import           Control.Concurrent.STM     ( newTVarIO )
 import           Control.Exception          ( SomeException
                                             , IOException
@@ -46,6 +49,8 @@ import qualified Data.ByteString.Char8      as BS
 ----------------------------------------------------------------------------
 import           DAP.Types
 import           DAP.Internal
+import           DAP.Utils
+import           DAP.Adaptor
 ----------------------------------------------------------------------------
 runDAPServer
   :: ServerConfig
@@ -55,22 +60,25 @@ runDAPServer
   -> IO ()
 runDAPServer serverConfig@ServerConfig {..} communicate = withSocketsDo $ do
   putStrLn ("Running DAP server on " <> show port <> "...")
+  appStore <- newTVarIO mempty
   serve (Host host) (show port) $ \(socket, address) -> do
     withGlobalLock (putStrLn $ "TCP connection established from " ++ show address)
     handle <- socketToHandle socket ReadWriteMode
     hSetNewlineMode handle NewlineMode { inputNL  = CRLF, outputNL = CRLF }
-    appStore <- newTVarIO mempty
-    let sessionId = Nothing
+    connectionLock <- newMVar ()
+    seqRef <- newIORef 0
+    sessionRef <- newIORef Nothing
     flip catch (exceptionHandler handle address) $ forever $ do
       request <- getRequest handle address
-      let adaptorState = mkAdaptorState appStore request handle address
+      atomicWriteIORef seqRef (requestSeqNum request)
+      let adaptorState = mkAdaptorState appStore request handle address seqRef connectionLock sessionRef
       runAdaptorClient adaptorState $ communicate (command request)
   where
     ----------------------------------------------------------------------------
     -- | Makes empty adaptor state
-    mkAdaptorState appStore request handle address
+    mkAdaptorState appStore request handle address seqRef connectionLock sessionRef
       = AdaptorState MessageTypeResponse [] appStore serverConfig
-        (requestSeqNum request) handle request address Nothing
+          seqRef handle request address sessionRef connectionLock
     ----------------------------------------------------------------------------
     -- | Utility for evaluating a monad transformer stack
     runAdaptorClient :: AdaptorState app -> AdaptorClient app a -> IO a
@@ -80,17 +88,20 @@ runDAPServer serverConfig@ServerConfig {..} communicate = withSocketsDo $ do
     exceptionHandler :: Handle -> SockAddr -> SomeException -> IO ()
     exceptionHandler handle address (e :: SomeException) = do
       let
-        logError
+        dumpError
           | Just (ParseException msg) <- fromException e
-              = putStrLn ("Parse Exception encountered: " <> msg)
+              = logger ERROR address Nothing
+                $ withBraces
+                $ BL8.pack ("Parse Exception encountered: " <> msg)
           | Just (err :: IOException) <- fromException e, isEOFError err
-              = putStrLn "Empty payload received"
-          | otherwise = do
-              putStrLn "Unknown Exception"
-              print e
-      withGlobalLock $ do
-        logError
-        putStrLn ("Closing connection: " <> show address)
+              = logger ERROR address Nothing
+                $ withBraces "Empty payload received"
+          | otherwise
+              = logger ERROR address Nothing
+                $ withBraces
+                $ BL8.pack ("Unknown Exception: " <> show e)
+      dumpError
+      logger ERROR address Nothing "[Closing Connection]"
       hClose handle
     ----------------------------------------------------------------------------
     -- | Internal function for parsing a 'ProtocolMessage' header
@@ -104,15 +115,17 @@ runDAPServer serverConfig@ServerConfig {..} communicate = withSocketsDo $ do
       headerBytes <- BS.hGetLine handle
       void (BS.hGetLine handle)
       parseHeader headerBytes >>= \case
-        Left errorMessage ->
+        Left errorMessage -> do
+          logger ERROR addr Nothing (BL8.pack errorMessage)
           throwIO (ParseException errorMessage)
         Right count -> do
           body <- BS.hGet handle count
-          withGlobalLock $ do
-            putStrLn $ "[RECEIVED][" <> show addr <> "]"
-            BL8.putStrLn $ encodePretty (decodeStrict body :: Maybe Value)
+          when debugLogging $ do
+            logger DEBUG addr (Just RECEIVED)
+              ("\n" <> encodePretty (decodeStrict body :: Maybe Value))
           case eitherDecode (BL8.fromStrict body) of
-            Left couldn'tDecodeBody ->
+            Left couldn'tDecodeBody -> do
+              logger ERROR addr Nothing (BL8.pack couldn'tDecodeBody)
               throwIO (ParseException couldn'tDecodeBody)
             Right request ->
               pure request
