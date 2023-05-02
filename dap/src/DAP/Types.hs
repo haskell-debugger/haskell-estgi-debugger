@@ -280,7 +280,7 @@ data ServerConfig
   } deriving stock (Show, Eq)
 ----------------------------------------------------------------------------
 -- | Used to signify a malformed message has been received
-data ParseException
+data AdaptorException
   = ParseException String
   | ExpectedArguments String
   | DebugSessionIdException String
@@ -807,7 +807,7 @@ data EventType
   deriving stock (Show, Eq, Read)
 ----------------------------------------------------------------------------
 instance ToJSON EventType where
-  toJSON = enumToLowerCamel (Proxy @EventType)
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data Command
   = CommandCancel
@@ -855,7 +855,7 @@ data Command
   | CommandWriteMemory
   | CommandDisassemble
   | CommandUnknown Text
-  deriving stock (Show, Eq, Read)
+  deriving stock (Show, Eq, Read, Generic)
 ----------------------------------------------------------------------------
 instance FromJSON Command where
   parseJSON = withText name $ \command ->
@@ -869,7 +869,7 @@ instance FromJSON Command where
 ----------------------------------------------------------------------------
 instance ToJSON Command where
   toJSON (CommandUnknown x) = toJSON x
-  toJSON cmd = enumToLowerCamel (Proxy @Command) cmd
+  toJSON cmd = genericToJSONWithModifier cmd
 ----------------------------------------------------------------------------
 data ErrorMessage
   = ErrorMessageCancelled

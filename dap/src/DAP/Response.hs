@@ -57,6 +57,8 @@ module DAP.Response
   , sendThreadsResponse
   , sendVariablesResponse
   , sendWriteMemoryResponse
+  , sendRunInTerminalResponse
+  , sendStartDebuggingResponse
   ) where
 ----------------------------------------------------------------------------
 import           DAP.Adaptor
@@ -260,4 +262,10 @@ sendStepInTargetsResponse = sendSuccesfulResponse . setBody
 ----------------------------------------------------------------------------
 sendVariablesResponse :: VariablesResponse -> AdaptorClient app ()
 sendVariablesResponse = sendSuccesfulResponse . setBody
+----------------------------------------------------------------------------
+sendRunInTerminalResponse :: RunInTerminalResponse -> AdaptorClient app ()
+sendRunInTerminalResponse = sendSuccessfulResponse . setBody
+----------------------------------------------------------------------------
+sendStartDebuggingResponse :: AdaptorClient app ()
+sendStartDebuggingResponse = sendSuccesfulEmptyResponse
 ----------------------------------------------------------------------------
