@@ -264,7 +264,7 @@ sendVariablesResponse :: VariablesResponse -> AdaptorClient app ()
 sendVariablesResponse = sendSuccesfulResponse . setBody
 ----------------------------------------------------------------------------
 sendRunInTerminalResponse :: RunInTerminalResponse -> AdaptorClient app ()
-sendRunInTerminalResponse = sendSuccessfulResponse . setBody
+sendRunInTerminalResponse = sendSuccesfulResponse . setBody
 ----------------------------------------------------------------------------
 sendStartDebuggingResponse :: AdaptorClient app ()
 sendStartDebuggingResponse = sendSuccesfulEmptyResponse

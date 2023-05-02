@@ -99,7 +99,7 @@ module DAP.Types
   , AdaptorState                       (..)
   , AppStore                           (..)
   -- * Errors
-  , ParseException                     (..)
+  , AdaptorException                   (..)
   , ErrorMessage                       (..)
   , ErrorResponse                      (..)
   -- * Request
@@ -170,6 +170,7 @@ module DAP.Types
   , ThreadsArguments                   (..)
   , VariablesArguments                 (..)
   , WriteMemoryArguments               (..)
+  , RunInTerminalResponse              (..)
   -- * defaults
   , defaultCapabilities
   -- * Log level
@@ -804,7 +805,7 @@ data EventType
   | EventTypeProgressEnd
   | EventTypeInvalidated
   | EventTypeMemory
-  deriving stock (Show, Eq, Read)
+  deriving stock (Show, Eq, Read, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON EventType where
   toJSON = genericToJSONWithModifier

@@ -65,7 +65,7 @@ let
     external-stg = self.callCabal2nix "external-stg" "${external-stg-src}/external-stg" {};
     external-stg-syntax = self.callCabal2nix "external-stg-syntax" "${external-stg-src}/external-stg-syntax" {};
     hello = with self;
-      pkgs.lib.overrideDerivation (addBuildDepends (callCabal2nix "hello" ./hello {}) [zip-cmd external-stg]) (drv: {
+      pkgs.lib.overrideDerivation (addBuildDepends (callCabal2nix "hello" ./hello {}) [zip-cmd external-stg pkgs.gcc]) (drv: {
         postInstall = ''
           ${external-stg}/bin/mkfullpak -a dist/build/hello/hello.o_ghc_stgapp
           mv -v dist/build/hello/hello.fullpak $out/bin/hello.fullpak
