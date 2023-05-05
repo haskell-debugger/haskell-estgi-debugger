@@ -71,6 +71,7 @@ module DAP.Types
   , StartMethod                        (..)
   , EvaluateArgumentsContext           (..)
   , PathFormat                         (..)
+  , StackFrame                         (..)
   -- * Command
   , Command                            (..)
   -- * Event
@@ -397,13 +398,13 @@ data Source
     -- has a name.
     -- When sending a source to the debug adapter this name is optional.
     --
-  , sourcePath :: Text
+  , sourcePath :: Maybe Text
     -- ^
     -- The path of the source to be shown in the UI.
     -- It is only used to locate and load the content of the source if no
     -- `sourceReference` is specified (or its value is 0).
     --
-  , sourceReference :: Maybe Int
+  , sourceSourceReference :: Maybe Int
     -- ^
     -- If the value > 0 the contents of the source must be retrieved through the
     -- `source` request (even if a path is specified).
@@ -423,18 +424,18 @@ data Source
     -- The origin of this source. For example, 'internal module', 'inlined content
     -- from source map', etc.
     --
-  , sourceSources :: [Source]
+  , sourceSources :: Maybe [Source]
     -- ^
     -- A list of sources that are related to this source. These may be the source
     -- that generated this source.
     --
-  , sourceAdapterData :: Value
+  , sourceAdapterData :: Maybe Value
     -- ^
     -- Additional data that a debug adapter might want to loop through the client.
     -- The client should leave the data intact and persist it across sessions. The
     -- client should not interpret the data.
     --
-  , sourceChecksums :: [Checksum]
+  , sourceChecksums :: Maybe [Checksum]
     -- ^
     -- The checksums associated with this file.
     --
@@ -517,7 +518,7 @@ data StackFrame
     -- ^
     -- The name of the stack frame, typically a method name.
     --
-  , stackFrameSource :: Source
+  , stackFrameSource :: Maybe Source
     -- ^
     -- The source of the frame.
     --
@@ -613,23 +614,23 @@ defaultCapabilities = capabilities
       , supportsEvaluateForHovers             = False
       , exceptionBreakpointFilters            = []
       , supportsStepBack                      = False
-      , supportsSetVariable                   = False
+      , supportsSetVariable                   = True
       , supportsRestartFrame                  = False
       , supportsGotoTargetsRequest            = False
       , supportsStepInTargetsRequest          = False
       , supportsCompletionsRequest            = False
       , completionTriggerCharacters           = []
-      , supportsModulesRequest                = False
+      , supportsModulesRequest                = True
       , additionalModuleColumns               = []
       , supportedChecksumAlgorithms           = []
       , supportsRestartRequest                = False
       , supportsExceptionOptions              = False
-      , supportsValueFormattingOptions        = False
+      , supportsValueFormattingOptions        = True
       , supportsExceptionInfoRequest          = False
       , supportTerminateDebuggee              = False
       , supportSuspendDebuggee                = False
       , supportsDelayedStackTraceLoading      = False
-      , supportsLoadedSourcesRequest          = False
+      , supportsLoadedSourcesRequest          = True
       , supportsLogPoints                     = False
       , supportsTerminateThreadsRequest       = False
       , supportsSetExpression                 = False
@@ -1230,7 +1231,7 @@ data Scope
     -- ^
     -- The source for this scope.
     --
-  , line :: Int
+  , line :: Maybe Int
     -- ^
     -- The start line of the range covered by this scope.
     --
@@ -1257,7 +1258,7 @@ instance ToJSON Scope where
     = object
     [ "name"              .= scopeName
     , "presentationHint"  .= presentationHint
-    , "variableReference" .= variablesReference
+    , "variablesReference" .= variablesReference
     , "namedVariables"    .= namedVariables
     , "indexedVariables"  .= indexedVariables
     , "expensive"         .= expensive
@@ -1313,7 +1314,7 @@ data Variable
     -- This attribute should only be returned by a debug adapter if the
     -- corresponding capability `supportsVariableType` is true.
     --
-  , variablePresentationHint :: VariablePresentationHint
+  , variablePresentationHint :: Maybe VariablePresentationHint
     -- ^
     -- Properties of a variable that can be used to determine how to render the
     -- variable in the UI.
@@ -1323,7 +1324,7 @@ data Variable
     -- The evaluatable name of this variable which can be passed to the `evaluate`
     -- request to fetch the variable's value.
     --
-  , variableReference :: Int
+  , variableVariablesReference :: Int
     -- ^
     -- If `variablesReference` is > 0, the variable is structured and its children
     -- can be retrieved by passing `variablesReference` to the `variables` request
@@ -1349,20 +1350,20 @@ data Variable
     -- This attribute is only required if the corresponding capability
     -- `supportsMemoryReferences` is true.
     --
-   } deriving stock (Show, Eq)
+   } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON Variable where
-  toJSON Variable {..}
-    = object
-    [ "value"            .= variableValue
-    , "type"             .= variableType
-    , "presentationHint" .= variablePresentationHint
-    , "evaluateName"     .= variableEvaluateName
-    , "reference"        .= variableReference
-    , "namedVariables"   .= variableNamedVariables
-    , "IndexedVariables" .= variableIndexedVariables
-    , "memoryReference"  .= variableMemoryReference
-    ]
+  toJSON = genericToJSONWithModifier
+    -- = object
+    -- [ "value"            .= variableValue
+    -- , "type"             .= variableType
+    -- , "presentationHint" .= variablePresentationHint
+    -- , "evaluateName"     .= variableEvaluateName
+    -- , "reference"        .= variablesReference
+    -- , "namedVariables"   .= variableNamedVariables
+    -- , "IndexedVariables" .= variableIndexedVariables
+    -- , "memoryReference"  .= variableMemoryReference
+    -- ]
 ----------------------------------------------------------------------------
 data VariablePresentationHint
   = VariablePresentationHint
@@ -3159,7 +3160,7 @@ data NextArguments
    -- Specifies the thread for which to resume execution for one step (of the
    -- given granularity).
    --
-  , nextArgumentsSingleThread :: Bool
+  , nextArgumentsSingleThread :: Maybe Bool
    -- ^
    -- If this flag is true, all other suspended threads are not resumed.
    --
@@ -3385,13 +3386,13 @@ instance FromJSON VariablesFilter where
 ----------------------------------------------------------------------------
 data VariablesArguments
   = VariablesArguments
-  { variablesArgumentsReference :: Int
+  { variablesArgumentsVariablesReference :: Int
     -- ^
     -- The variable for which to retrieve its children. The `variablesReference`
     -- must have been obtained in the current suspended state. See 'Lifetime of
     -- Object References' in the Overview section for details.
     --
-  , variablesArgumentsFilter :: Maybe VariablesArguments
+  , variablesArgumentsFilter :: Maybe VariablesFilter
     -- ^
     -- Filter to limit the child variables to either named or indexed. If omitted,
     -- both types are fetched.

@@ -62,19 +62,6 @@ packages:
     commit: 9d7a96a0b831f980d8c9d5a30a9185b64fbbfa31
     git: https://github.com/grin-compiler/ghc-whole-program-compiler-project
     subdir: external-stg-syntax
-- completed:
-    commit: 9d7a96a0b831f980d8c9d5a30a9185b64fbbfa31
-    git: https://github.com/grin-compiler/ghc-whole-program-compiler-project
-    name: external-stg-interpreter
-    pantry-tree:
-      sha256: d296571bee5b9ce9e7bb3c4f63b59bd1077a1f90881d9e3524e11017fefdcc2a
-      size: 6662
-    subdir: external-stg-interpreter
-    version: 0.1.0.1
-  original:
-    commit: 9d7a96a0b831f980d8c9d5a30a9185b64fbbfa31
-    git: https://github.com/grin-compiler/ghc-whole-program-compiler-project
-    subdir: external-stg-interpreter
 snapshots:
 - completed:
     sha256: 9fa4bece7acfac1fc7930c5d6e24606004b09e80aa0e52e9f68b148201008db9

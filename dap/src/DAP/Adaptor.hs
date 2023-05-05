@@ -26,6 +26,7 @@ module DAP.Adaptor
   , getArguments
   , registerNewDebugSession
   , withDebugSession
+  , getDebugSession
   , getDebugSessionId
   , destroyDebugSession
   -- * Logging
@@ -141,6 +142,19 @@ registerNewDebugSession k v action = do
   liftIO . atomically $ modifyTVar' store (H.insert k (tid, v))
   setDebugSessionId k
   logInfo $ BL8.pack $ "Registered new debug session: " <> unpack k
+----------------------------------------------------------------------------
+getDebugSession :: AdaptorClient app app
+getDebugSession = do
+  getDebugSessionId >>= \case
+    Nothing -> error "oops fix me"
+    Just sessionId -> do
+      appStore <- liftIO . readTVarIO =<< getAppStore
+      case H.lookup sessionId appStore of
+        Nothing ->
+          error "oops fix me"
+        Just (_, state) ->
+          pure state
+
 ----------------------------------------------------------------------------
 withDebugSession :: (app -> AdaptorClient app ()) -> AdaptorClient app ()
 withDebugSession continuation = do

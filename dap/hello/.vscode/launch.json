@@ -7,7 +7,7 @@
         {
             "type": "dap-extension",
             "request": "attach",
-            "program": "${workspaceFolder}/test.fullpak",
+            "program": "${workspaceFolder}/hello-macos.fullpak",
             "name": "hello"
         }
     ]

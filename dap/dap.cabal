@@ -23,9 +23,12 @@ executable dap
     -threaded
   build-depends:
       base < 5
+    , containers
     , dap
     , bytestring
     , external-stg-interpreter
+    , external-stg-syntax
+    , external-stg
     , lifted-base
     , network
     , unagi-chan
@@ -34,6 +37,7 @@ executable dap
     , text
     , time
     , mtl
+    , yaml
   hs-source-dirs:
     exe
   default-language:

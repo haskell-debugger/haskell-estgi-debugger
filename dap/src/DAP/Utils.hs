@@ -22,7 +22,7 @@ import           GHC.Generics               (Generic, Rep)
 import           Data.Aeson                 ( ToJSON(toJSON), Value, fieldLabelModifier
                                             , genericToJSON, genericParseJSON, fieldLabelModifier
                                             , defaultOptions, GToJSON, GFromJSON, Zero, Options
-                                            , constructorTagModifier
+                                            , constructorTagModifier, sumEncoding, SumEncoding(UntaggedValue), omitNothingFields
                                             )
 import           Data.Aeson.Types           ( Parser )
 import           Data.Aeson.Encode.Pretty   ( encodePretty )
@@ -104,6 +104,8 @@ genericToJSONWithModifier
   = genericToJSON defaultOptions
   { fieldLabelModifier = modifier (Proxy @a)
   , constructorTagModifier = modifier (Proxy @a)
+  , sumEncoding = UntaggedValue
+  , omitNothingFields = True
   }
 ----------------------------------------------------------------------------
 -- | Used as a fieldLabelModifier when generating aeson parsers
@@ -117,6 +119,8 @@ genericParseJSONWithModifier
   = genericParseJSON defaultOptions
   { fieldLabelModifier = modifier (Proxy @a)
   , constructorTagModifier = modifier (Proxy @a)
+  , sumEncoding = UntaggedValue
+  , omitNothingFields = True
   }
 ----------------------------------------------------------------------------
 -- | Log formatting util

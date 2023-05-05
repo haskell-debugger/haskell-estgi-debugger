@@ -2,6 +2,7 @@ resolver: lts-20.18
 
 packages:
   - '.'
+  - 'ghc-whole-program-compiler-project/external-stg-interpreter'
 
 extra-deps:
   - souffle-haskell-3.4.0
@@ -16,7 +17,7 @@ extra-deps:
     subdirs:
       - external-stg
       - external-stg-syntax
-      - external-stg-interpreter
+      # - external-stg-interpreter
 
 flags:
   digest:
