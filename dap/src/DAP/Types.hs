@@ -57,7 +57,7 @@ module DAP.Types
   , SteppingGranularity                (..)
   , StoppedEventReason                 (..)
   , Thread                             (..)
-  , ThreadEventReason
+  , ThreadEventReason                  (..)
   , ValueFormat                        (..)
   , Variable                           (..)
   , VariablePresentationHint           (..)
@@ -71,12 +71,11 @@ module DAP.Types
   , StartMethod                        (..)
   , EvaluateArgumentsContext           (..)
   , PathFormat                         (..)
-  , StackFrame                         (..)
-  -- * Command
+    -- * Command
   , Command                            (..)
-  -- * Event
+    -- * Event
   , EventType                          (..)
-  -- ** Events
+    -- ** Events
   , StoppedEvent                       (..)
   , ContinuedEvent                     (..)
   , ExitedEvent                        (..)
@@ -93,23 +92,23 @@ module DAP.Types
   , ProgressEndEvent                   (..)
   , InvalidatedEvent                   (..)
   , MemoryEvent                        (..)
-  -- * Server
+    -- * Server
   , ServerConfig                       (..)
-  -- * Client
-  , AdaptorClient                      (..)
+    -- * Client
+  , Adaptor                            (..)
   , AdaptorState                       (..)
   , AppStore                           (..)
-  -- * Errors
+    -- * Errors
   , AdaptorException                   (..)
   , ErrorMessage                       (..)
   , ErrorResponse                      (..)
-  -- * Request
+    -- * Request
   , Request                            (..)
-  -- * Misc.
+    -- * Misc.
   , PayloadSize
   , Seq
   , SessionId
-  -- * Responses
+    -- * Responses
   , CompletionsResponse                (..)
   , ContinueResponse                   (..)
   , DataBreakpointInfoResponse         (..)
@@ -129,7 +128,7 @@ module DAP.Types
   , ThreadsResponse                    (..)
   , VariablesResponse                  (..)
   , WriteMemoryResponse                (..)
-  -- * Arguments
+    -- * Arguments
   , AttachRequestArguments             (..)
   , BreakpointLocationsArguments       (..)
   , CompletionsArguments               (..)
@@ -172,14 +171,45 @@ module DAP.Types
   , VariablesArguments                 (..)
   , WriteMemoryArguments               (..)
   , RunInTerminalResponse              (..)
-  -- * defaults
+    -- * defaults
+  , defaultBreakpointLocation
   , defaultCapabilities
-  -- * Log level
+  , defaultColumnDescriptor
+  , defaultCompletionItem
+  , defaultDisassembledInstruction
+  , defaultExceptionBreakpointsFilter
+  , defaultExceptionDetails
+  , defaultFunctionBreakpoint
+  , defaultGotoTarget
+  , defaultMessage
+  , defaultModule
+  , defaultModulesViewDescriptor
+  , defaultScope
+  , defaultSource
+  , defaultSourceBreakpoint
+  , defaultStackFrame
+  , defaultStackFrameFormat
+  , defaultStepInTarget
+  , defaultThread
+  , defaultValueFormat
+  , defaultVariable
+  , defaultVariablePresentationHint
+    -- * Log level
   , Level (..)
   , DebugStatus (..)
+    -- * Variables
+  , VariableReferences (..)
+    -- * Object Lifetime Types
+  , VariableId
+  , FrameId
+  , ScopeId
   ) where
 ----------------------------------------------------------------------------
+import           Data.Word                       ( Word32 )
+import           Data.IntMap.Strict              ( IntMap )
+import qualified Data.IntMap.Strict              as I
 import           Control.Monad.Base              ( MonadBase )
+import           Control.Monad.Except            ( MonadError, ExceptT )
 import           Control.Monad.Trans.Control     ( MonadBaseControl )
 import           Control.Concurrent              ( ThreadId )
 import           Control.Concurrent.MVar         ( MVar )
@@ -208,43 +238,45 @@ import qualified Data.HashMap.Strict             as H
 import           GHC.TypeLits                    (TypeError)
 import qualified GHC.TypeLits                    as TypeLits
 ----------------------------------------------------------------------------
-import           DAP.Utils                       ( capitalize, enumToLowerCamel, toLowerCase, modifier, getName, genericParseJSONWithModifier, genericToJSONWithModifier )
+import           DAP.Utils                       ( capitalize, toLowerCase, modifier, getName, genericParseJSONWithModifier, genericToJSONWithModifier )
 ----------------------------------------------------------------------------
 -- | Core type for Debug Adaptor to send and receive messages in a type safe way.
 -- the state is 'AdaptorState' which holds configuration information, along with
 -- the current event / response being constructed and the type of the message.
 -- Of note: A 'StateT' is used because 'adaptorPayload' should not be shared
 -- with other threads.
-newtype AdaptorClient store a = AdaptorClient (StateT (AdaptorState store) IO a)
+newtype Adaptor store a =
+    Adaptor (ExceptT (ErrorMessage, Maybe Message) (StateT (AdaptorState store) IO) a)
   deriving newtype
     ( Monad
     , MonadIO, Applicative, Functor, MonadState (AdaptorState store)
     , MonadBaseControl IO
+    , MonadError (ErrorMessage, Maybe Message)
     , MonadBase IO
     )
 ----------------------------------------------------------------------------
 -- | The adaptor state is local to a single connection / thread
 data AdaptorState app
   = AdaptorState
-  { adaptorMessageType  :: MessageType
+  { messageType  :: MessageType
     -- ^ Current message type being created
     -- This was added as a convenience so we can set the 'request_seq'
     -- and 'command' fields automatically.
     --
-  , adaptorPayload      :: ![Pair]
+  , payload      :: ![Pair]
     -- ^ Payload of the current message to be sent
     -- This should never be manually modified by the end user
     -- The payload is accumulated automatically by usage of the API
     --
-  , adaptorAppStore     :: AppStore app
+  , appStore     :: AppStore app
     -- ^ Global app store, accessible on a per session basis
     -- Initialized during 'attach' sessions
     --
-  , adaptorServerConfig :: ServerConfig
+  , serverConfig :: ServerConfig
     -- ^ Configuration information for the ServerConfig
     -- Identical across all debugging sessions
     --
-  , seqRef              :: IORef Seq
+  , seqRef              :: !Seq
     -- ^ Thread local sequence number, updating as responses and events are set
     --
   , handle              :: Handle
@@ -256,14 +288,34 @@ data AdaptorState app
   , address             :: SockAddr
     -- ^ Address of Connection
     --
-  , sessionId           :: IORef (Maybe SessionId)
+  , sessionId           :: Maybe SessionId
     -- ^ Session ID
     -- Local to the current connection's debugger session
     --
   , handleLock          :: MVar ()
-    -- ^ A lock for writing to a Handle exists for each new connection
+    -- ^ A lock for writing to a Handle. One lock is created per connection
+    -- and exists for the duration of that connection
+    --
+  , variablesMap        :: !VariableReferences
+    -- ^ Used in the protocol to implement 'Object lifetimes and references'
+    -- The lifetime of this map is limited to the time between Stopped and Continued events.
+    -- It will get reset every time the debugger stops execution.
+    --
+  , currentVariableId  :: !Int
+    -- ^ Monotonically increasing integer for scopes + variables.
+    -- Local to the current "Stopped" session.
+    -- Limited to size 2^31
+    --
+  , currentFrameId     :: !Int
+    -- ^ The current FrameID
+    --
+  , currentScopeId     :: !Int
+    -- ^ The current ScopeID
     --
   }
+
+-- <frameId, <scopeId, <variableId, Variable>>>
+type VariableReferences = IntMap (IntMap (IntMap Variable))
 ----------------------------------------------------------------------------
 type SessionId = Text
 ----------------------------------------------------------------------------
@@ -367,7 +419,7 @@ data Breakpoint
     -- If no end line is given, then the end column is assumed to be in the start
     -- line.
     --
-  , breakpointInstructionReference :: Text
+  , breakpointInstructionReference :: Maybe Text
     -- ^
     -- A memory reference to where the breakpoint is set.
     --
@@ -377,6 +429,20 @@ data Breakpoint
     -- This can be negative.
     --
   } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+defaultBreakpoint :: Breakpoint
+defaultBreakpoint = Breakpoint
+  { breakpointId = Nothing
+  , breakpointVerified = False
+  , breakpointMessage = Nothing
+  , breakpointSource = Nothing
+  , breakpointLine = Nothing
+  , breakpointColumn = Nothing
+  , breakpointEndLine = Nothing
+  , breakpointEndColumn = Nothing
+  , breakpointInstructionReference = Nothing
+  , breakpointOffset = Nothing
+  }
 ----------------------------------------------------------------------------
 instance ToJSON Breakpoint where
   toJSON = genericToJSONWithModifier
@@ -440,6 +506,19 @@ data Source
     -- The checksums associated with this file.
     --
   } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+defaultSource :: Source
+defaultSource
+  = Source
+  { sourceName             = Nothing
+  , sourcePath             = Nothing
+  , sourceSourceReference  = Nothing
+  , sourcePresentationHint = Nothing
+  , sourceOrigin           = Nothing
+  , sourceSources          = Nothing
+  , sourceAdapterData      = Nothing
+  , sourceChecksums        = Nothing
+  }
 ----------------------------------------------------------------------------
 instance FromJSON Source where
    parseJSON = genericParseJSONWithModifier
@@ -534,17 +613,17 @@ data StackFrame
     -- whether it is 0- or 1-based. If attribute `source` is missing or doesn't
     -- exist, `column` is 0 and should be ignored by the client.
     --
-  , stackFrameEndLine :: Int
+  , stackFrameEndLine :: Maybe Int
     -- ^
     -- The end line of the range covered by the stack frame.
     --
-  , stackFrameEndColumn :: Int
+  , stackFrameEndColumn :: Maybe Int
     -- ^
     -- End position of the range covered by the stack frame. It is measured in
     -- UTF-16 code units and the client capability `columnsStartAt1` determines
     -- whether it is 0- or 1-based.
     --
-  , stackFrameCanRestart :: Bool
+  , stackFrameCanRestart :: Maybe Bool
     -- ^
     -- Indicates whether this frame can be restarted with the `restart` request.
     -- Clients should only use this if the debug adapter supports the `restart`
@@ -568,24 +647,26 @@ data StackFrame
     -- be used to change the appearance of a frame in a 'subtle' way.
     -- Values: 'normal', 'label', 'subtle'
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+defaultStackFrame :: StackFrame
+defaultStackFrame
+  = StackFrame
+  { stackFrameId = 0
+  , stackFrameName = mempty
+  , stackFrameSource = Nothing
+  , stackFrameLine = 0
+  , stackFrameColumn = 0
+  , stackFrameEndLine = Nothing
+  , stackFrameEndColumn = Nothing
+  , stackFrameCanRestart = Nothing
+  , stackFrameInstructionPointerReference = Nothing
+  , stackFrameModuleId = Nothing
+  , stackFramePresentationHint = Nothing
+  }
 ----------------------------------------------------------------------------
 instance ToJSON StackFrame where
-  toJSON StackFrame {..}
-    = object
-    [ "id"                          .= stackFrameId
-    , "name"                        .= stackFrameName
-    , "source"                      .= stackFrameSource
-    , "line"                        .= stackFrameLine
-    , "column"                      .= stackFrameColumn
-    , "endLine"                     .= stackFrameEndLine
-    , "endColumn"                   .= stackFrameEndColumn
-    , "canRestart"                  .= stackFrameCanRestart
-    , "instructionPointerReference" .= stackFrameInstructionPointerReference
-    , "moduleId"                    .= modId
-    , "presentationHint"            .= stackFramePresentationHint
-    ] where
-        modId = maybe Null (either toJSON toJSON) stackFrameModuleId
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data Thread
   = Thread
@@ -596,6 +677,13 @@ data Thread
     -- ^ The name of the thread.
     --
   } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+defaultThread :: Thread
+defaultThread
+  = Thread
+  { threadId = 0
+  , threadName = "<main>"
+  }
 ----------------------------------------------------------------------------
 instance ToJSON Thread where
   toJSON = genericToJSONWithModifier
@@ -614,14 +702,18 @@ defaultCapabilities = capabilities
       , supportsEvaluateForHovers             = False
       , exceptionBreakpointFilters            = []
       , supportsStepBack                      = False
-      , supportsSetVariable                   = True
+      , supportsSetVariable                   = False
       , supportsRestartFrame                  = False
       , supportsGotoTargetsRequest            = False
       , supportsStepInTargetsRequest          = False
       , supportsCompletionsRequest            = False
       , completionTriggerCharacters           = []
       , supportsModulesRequest                = True
-      , additionalModuleColumns               = []
+      , additionalModuleColumns               = [ defaultColumnDescriptor
+                                                  { columnDescriptorAttributeName = "Extra"
+                                                  , columnDescriptorLabel = "Label"
+                                                  }
+                                                ]
       , supportedChecksumAlgorithms           = []
       , supportsRestartRequest                = False
       , supportsExceptionOptions              = False
@@ -728,7 +820,7 @@ data Capabilities
   , supportsDelayedStackTraceLoading :: Bool
     -- ^ The debug adapter , supports the delayed loading of parts of the stack, which
     -- ^ requires that both the `startFrame` and `levels` arguments and the
-    -- ^ `totalFrames` result of the `stackTrace` request are , supported.
+    -- ^ `totalFrames` result of the `stackTrace` request are supported.
     --
   , supportsLoadedSourcesRequest :: Bool
     -- ^ The debug adapter , supports the `loadedSources` request.
@@ -876,14 +968,14 @@ instance ToJSON Command where
 data ErrorMessage
   = ErrorMessageCancelled
   | ErrorMessageNotStopped
-  | ErrorMessageCustom Text
+  | ErrorMessage Text
   deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance IsString ErrorMessage where
-  fromString = ErrorMessageCustom . T.pack
+  fromString = ErrorMessage . T.pack
 ----------------------------------------------------------------------------
 instance ToJSON ErrorMessage where
-  toJSON (ErrorMessageCustom e) = toJSON e
+  toJSON (ErrorMessage e) = toJSON e
   toJSON msg = genericToJSONWithModifier msg
 ----------------------------------------------------------------------------
 data BreakpointLocation
@@ -908,16 +1000,19 @@ data BreakpointLocation
     -- Position is measured in UTF-16 code units and the client capability
     -- `columnsStartAt1` determines whether it is 0- or 1-based.
     --
-  } deriving stock (Eq, Show)
+  } deriving stock (Eq, Show, Generic)
+----------------------------------------------------------------------------
+defaultBreakpointLocation :: BreakpointLocation
+defaultBreakpointLocation
+  = BreakpointLocation
+  { breakpointLocationLine = 0
+  , breakpointLocationColumn = Nothing
+  , breakpointLocationEndLine = Nothing
+  , breakpointLocationEndColumn = Nothing
+  }
 ----------------------------------------------------------------------------
 instance ToJSON BreakpointLocation where
-  toJSON BreakpointLocation {..}
-    = object
-    [ "line"      .= breakpointLocationLine
-    , "column"    .= breakpointLocationColumn
-    , "endLine"   .= breakpointLocationEndLine
-    , "endColumn" .= breakpointLocationEndLine
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data ContinueResponse
   = ContinueResponse
@@ -927,22 +1022,19 @@ data ContinueResponse
     -- threads have been resumed. The value false indicates that not all threads
     -- were resumed.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON ContinueResponse where
-  toJSON ContinueResponse {..}
-    = object
-    [ "allThreadsContinued" .= continueResponseAllThreadsContinued
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 -- | On error (whenever success is false), the body can provide more details.
 newtype ErrorResponse
   = ErrorResponse
   { errorResponseError :: Maybe Message
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON ErrorResponse where
-  toJSON ErrorResponse {..} = object [ "error" .= errorResponseError ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data Message
   = Message
@@ -965,7 +1057,7 @@ data Message
     -- An object used as a dictionary for looking up the variables in the format
     -- string.
     --
-  , messageSendTelemetry :: Bool
+  , messageSendTelemetry :: Maybe Bool
     -- ^
     -- If true send to telemetry.
     --
@@ -981,19 +1073,22 @@ data Message
     -- ^
     -- A label that is presented to the user as the UI for opening the url.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+defaultMessage :: Message
+defaultMessage
+  = Message
+  { messageId = 0
+  , messageFormat = mempty
+  , messageVariables = Nothing
+  , messageSendTelemetry = Nothing
+  , messageShowUser = Nothing
+  , messageUrl = Nothing
+  , messageUrlLabel = Nothing
+  }
 ----------------------------------------------------------------------------
 instance ToJSON Message where
-  toJSON Message {..} =
-    object
-    [ "id"            .= messageId
-    , "format"        .= messageFormat
-    , "variables"     .= messageVariables
-    , "sendTelemetry" .= messageSendTelemetry
-    , "showUser"      .= messageShowUser
-    , "url"           .= messageUrl
-    , "urlLabel"      .= messageUrlLabel
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data RunInTerminalResponse
   = RunInTerminalResponse
@@ -1007,33 +1102,25 @@ data RunInTerminalResponse
     -- The process ID of the terminal shell. The value should be less than or
     -- equal to 2147483647 (2^31-1).
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON RunInTerminalResponse where
-  toJSON RunInTerminalResponse {..} =
-    object
-    [ "processId"      .= runInTerminalResponseProcessId
-    , "shellProcessId" .= runInTerminalResponseShellProcessId
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data ModulesResponse
   = ModulesResponse
-  { modules :: [Module]
+  { modulesResponseModules :: [Module]
     -- ^
     -- All modules or range of modules.
     --
-  , totalModules :: Maybe Int
+  , modulesResponseTotalModules :: Maybe Int
     -- ^
     -- The total number of modules available.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON ModulesResponse where
-  toJSON ModulesResponse {..}
-    = object
-    [ "modules"      .= modules
-    , "totalModules" .= totalModules
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data Module
   = Module
@@ -1045,7 +1132,7 @@ data Module
     -- ^
     -- A name of the module.
     --
-  , modulePath :: Text
+  , modulePath :: Maybe Text
     -- ^
     -- Logical full path to the module. The exact definition is implementation
     -- defined, but usually this would be a full path to the on-disk file for the
@@ -1082,22 +1169,25 @@ data Module
     -- ^
     -- Address range covered by this module.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON Module where
-  toJSON Module {..}
-    = object
-    [ "id"             .= moduleId
-    , "name"           .= moduleName
-    , "path"           .= modulePath
-    , "isOptimized"    .= moduleIsOptimized
-    , "isUserCode"     .= moduleIsUserCode
-    , "version"        .= moduleVersion
-    , "symbolStatus"   .= moduleSymbolStatus
-    , "symbolFilePath" .= moduleSymbolFilePath
-    , "dateTimeStamp"  .= moduleDateTimeStamp
-    , "addressRange"   .= moduleAddressRange
-    ]
+  toJSON = genericToJSONWithModifier
+----------------------------------------------------------------------------
+defaultModule :: Module
+defaultModule
+  = Module
+  { moduleId = Right 0
+  , moduleName = mempty
+  , modulePath = mempty
+  , moduleIsOptimized = Nothing
+  , moduleIsUserCode = Nothing
+  , moduleVersion = Nothing
+  , moduleSymbolStatus = Nothing
+  , moduleSymbolFilePath = Nothing
+  , moduleDateTimeStamp = Nothing
+  , moduleAddressRange = Nothing
+  }
 ----------------------------------------------------------------------------
 data DataBreakpointInfoResponse
   = DataBreakpointInfoResponse
@@ -1122,16 +1212,10 @@ data DataBreakpointInfoResponse
     -- Attribute indicates that a potential data breakpoint could be persisted
     -- across sessions.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON DataBreakpointInfoResponse where
-  toJSON DataBreakpointInfoResponse {..}
-    = object
-    [ "dataId"      .= dataBreakpointInfoResponseDataId
-    , "description" .= dataBreakpointInfoResponseDescription
-    , "accessTypes" .= dataBreakpointInfoResponseDescriptionAccessTypes
-    , "canPersist"  .= dataBreakpointInfoResponseDescriptionCanPersist
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 -- | This enumeration defines all possible access types for data breakpoints.
 -- Values: ‘read’, ‘write’, ‘readWrite’
@@ -1139,11 +1223,14 @@ data DataBreakpointAccessType
   = DataBreakpointAccessTypeRead
   | DataBreakpointAccessTypeWrite
   | DataBreakpointAccessTypeReadWrite
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+instance FromJSON DataBreakpointAccessType where
+  parseJSON = genericParseJSONWithModifier
 ----------------------------------------------------------------------------
 -- | type DataBreakpointAccessType = 'read' | 'write' | 'readWrite';
 instance ToJSON DataBreakpointAccessType where
-  toJSON = enumToLowerCamel (Proxy @DataBreakpointAccessType)
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data StackTraceResponse
   = StackTraceResponse
@@ -1192,7 +1279,7 @@ data Scope
     -- Name of the scope such as 'Arguments', 'Locals', or 'Registers'. This
     -- string is shown in the UI as is and can be translated.
     --
-  , presentationHint :: Maybe ScopePresentationHint
+  , scopePresentationHint :: Maybe ScopePresentationHint
     -- ^
     -- A hint for how to present this scope in the UI. If this attribute is
     -- missing, the scope is shown with a generic UI.
@@ -1203,84 +1290,85 @@ data Scope
     -- should be returned from a `scopes` request.
     -- etc.
     --
-  , variablesReference :: Int
+  , scopeVariablesReference :: Int
     -- ^
     -- The variables of this scope can be retrieved by passing the value of
     -- `variablesReference` to the `variables` request as long as execution
     -- remains suspended. See 'Lifetime of Object References' in the Overview
     -- section for details.
     --
-  , namedVariables :: Maybe Int
+  , scopeNamedVariables :: Maybe Int
     -- ^
     -- The number of named variables in this scope.
     -- The client can use this information to present the variables in a paged UI
     -- and fetch them in chunks.
     --
-  , indexedVariables :: Maybe Int
+  , scopeIndexedVariables :: Maybe Int
     -- ^
     -- The number of indexed variables in this scope.
     -- The client can use this information to present the variables in a paged UI
     -- and fetch them in chunks.
     --
-  , expensive :: Bool
+  , scopeExpensive :: Bool
     -- ^
     -- If true, the number of variables in this scope is large or expensive to
     -- retrieve.
     --
-  , source :: Maybe Source
+  , scopeSource :: Maybe Source
     -- ^
     -- The source for this scope.
     --
-  , line :: Maybe Int
+  , scopeLine :: Maybe Int
     -- ^
     -- The start line of the range covered by this scope.
     --
-  , column :: Maybe Int
+  , scopeColumn :: Maybe Int
     -- ^
     -- Start position of the range covered by the scope. It is measured in UTF-16
     -- code units and the client capability `columnsStartAt1` determines whether
     -- it is 0- or 1-based.
     --
-  , endLine :: Maybe Int
+  , scopeEndLine :: Maybe Int
     -- ^
     -- The end line of the range covered by this scope.
     --
-  , endColumn :: Maybe Int
+  , scopeEndColumn :: Maybe Int
     -- ^
     -- End position of the range covered by the scope. It is measured in UTF-16
     -- code units and the client capability `columnsStartAt1` determines whether
     -- it is 0- or 1-based.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+defaultScope :: Scope
+defaultScope
+  = Scope
+  { scopeName = mempty
+  , scopePresentationHint = Nothing
+  , scopeVariablesReference = 0
+  , scopeNamedVariables = Nothing
+  , scopeIndexedVariables = Nothing
+  , scopeExpensive = False
+  , scopeSource = Nothing
+  , scopeLine = Nothing
+  , scopeColumn = Nothing
+  , scopeEndLine = Nothing
+  , scopeEndColumn = Nothing
+  }
 ----------------------------------------------------------------------------
 instance ToJSON Scope where
-  toJSON Scope {..}
-    = object
-    [ "name"              .= scopeName
-    , "presentationHint"  .= presentationHint
-    , "variablesReference" .= variablesReference
-    , "namedVariables"    .= namedVariables
-    , "indexedVariables"  .= indexedVariables
-    , "expensive"         .= expensive
-    , "source"            .= source
-    , "line"              .= line
-    , "column"            .= column
-    , "endLine"           .= endLine
-    , "endColumn"         .= endColumn
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data ScopePresentationHint
   = ScopePresentationHintArguments
   | ScopePresentationHintLocals
-  | ScopePresentationHintRegister
+  | ScopePresentationHintRegisters
   | ScopePresentationHint Text
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON ScopePresentationHint where
-  toJSON ScopePresentationHintArguments = "arguments"
-  toJSON ScopePresentationHintLocals    = "locals"
-  toJSON ScopePresentationHintRegister  = "register"
-  toJSON (ScopePresentationHint hint)   = toJSON hint
+  toJSON (ScopePresentationHint hint) = toJSON hint
+  toJSON hint = genericToJSONWithModifier hint
 ----------------------------------------------------------------------------
 data VariablesResponse
   = VariablesResponse
@@ -1352,22 +1440,26 @@ data Variable
     --
    } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
+defaultVariable :: Variable
+defaultVariable
+  = Variable
+  { variableName = mempty
+  , variableValue = mempty
+  , variableType = Nothing
+  , variablePresentationHint = Nothing
+  , variableEvaluateName = Nothing
+  , variableVariablesReference = 0
+  , variableNamedVariables = Nothing
+  , variableIndexedVariables = Nothing
+  , variableMemoryReference = Nothing
+  }
+----------------------------------------------------------------------------
 instance ToJSON Variable where
   toJSON = genericToJSONWithModifier
-    -- = object
-    -- [ "value"            .= variableValue
-    -- , "type"             .= variableType
-    -- , "presentationHint" .= variablePresentationHint
-    -- , "evaluateName"     .= variableEvaluateName
-    -- , "reference"        .= variablesReference
-    -- , "namedVariables"   .= variableNamedVariables
-    -- , "IndexedVariables" .= variableIndexedVariables
-    -- , "memoryReference"  .= variableMemoryReference
-    -- ]
 ----------------------------------------------------------------------------
 data VariablePresentationHint
   = VariablePresentationHint
-  { variablePresentationHintKind :: PresentationHintKind
+  { variablePresentationHintKind :: Maybe PresentationHintKind
     -- ^
     -- The kind of variable. Before introducing additional values, try to use the
     -- listed values.
@@ -1389,7 +1481,7 @@ data VariablePresentationHint
     -- generally be used instead.
     -- etc.
     --
-  , variablePresentationHintAttributes :: [PresentationHintAttributes]
+  , variablePresentationHintAttributes :: Maybe [PresentationHintAttributes]
     -- ^
     -- Set of attributes represented as an array of strings. Before introducing
     -- additional values, try to use the listed values.
@@ -1413,7 +1505,7 @@ data VariablePresentationHint
     -- the listed values.
     -- Values: 'public', 'private', 'protected', 'internal', 'final', etc.
     --
-  , variablePresentationHintLazy :: Bool
+  , variablePresentationHintLazy :: Maybe Bool
     -- ^
     -- If true, clients can present the variable with a UI that supports a
     -- specific gesture to trigger its evaluation.
@@ -1425,16 +1517,19 @@ data VariablePresentationHint
     -- `variablesReference` is expected to refer to a variable that will provide
     -- the value through another `variable` request.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+defaultVariablePresentationHint :: VariablePresentationHint
+defaultVariablePresentationHint
+  = VariablePresentationHint
+  { variablePresentationHintKind = Nothing
+  , variablePresentationHintAttributes = Nothing
+  , variablePresentationHintVisibility = Nothing
+  , variablePresentationHintLazy = Nothing
+  }
 ----------------------------------------------------------------------------
 instance ToJSON VariablePresentationHint where
-  toJSON VariablePresentationHint {..} =
-    object
-    [ "kind"       .= variablePresentationHintKind
-    , "attributes" .= variablePresentationHintAttributes
-    , "visibility" .= variablePresentationHintVisibility
-    , "lazy"       .= variablePresentationHintLazy
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data PresentationHintVisibility
   = PresentationHintVisibilityPublic
@@ -1442,11 +1537,13 @@ data PresentationHintVisibility
   | PresentationHintVisibilityProtected
   | PresentationHintVisibilityInternal
   | PresentationHintVisibilityFinal
-  deriving stock (Show, Eq)
+  | PresentationHintVisibility String
+  deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 -- | ?: 'public' | 'private' | 'protected' | 'internal' | 'final' | string;
 instance ToJSON PresentationHintVisibility where
-  toJSON = enumToLowerCamel (Proxy @PresentationHintVisibility)
+  toJSON (PresentationHintVisibility hint) = toJSON hint
+  toJSON hint = genericToJSONWithModifier hint
 ----------------------------------------------------------------------------
 data PresentationHintAttributes
   = PresentationHintAttributesStatic
@@ -1457,12 +1554,14 @@ data PresentationHintAttributes
   | PresentationHintAttributesCanHaveObjectId
   | PresentationHintAttributesHasSideEffects
   | PresentationHintAttributesHasDataBreakpoint
-  deriving stock (Show, Eq)
+  | PresentationHintAttributes String
+  deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 -- | attributes?: ('static' | 'constant' | 'readOnly' | 'rawText' | 'hasObjectId'
 --   'canHaveObjectId' | 'hasSideEffects' | 'hasDataBreakpoint' | string)[];
 instance ToJSON PresentationHintAttributes where
-  toJSON = enumToLowerCamel (Proxy @PresentationHintAttributes)
+  toJSON (PresentationHintAttributes x) = toJSON x
+  toJSON hint = genericToJSONWithModifier hint
 ----------------------------------------------------------------------------
 data PresentationHintKind
   = PresentationHintKindProperty
@@ -1476,12 +1575,12 @@ data PresentationHintKind
   | PresentationHintKindMostDerivedClass
   | PresentationHintKindVirtual
   | PresentationHintKindDataBreakpoint
-  | PresentationHintKindCustom Text
-  deriving stock (Show, Eq)
+  | PresentationHintKind Text
+  deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON PresentationHintKind where
-  toJSON (PresentationHintKindCustom x) = toJSON x
-  toJSON kind = enumToLowerCamel (Proxy @PresentationHintKind) kind
+  toJSON (PresentationHintKind x) = toJSON x
+  toJSON kind = genericToJSONWithModifier kind
 ----------------------------------------------------------------------------
 data SetVariableResponse
   = SetVariableResponse
@@ -1704,12 +1803,23 @@ data StepInTarget
     -- ^
     -- The end line of the range covered by the step-in target.
     --
-  , stepInTargetEndColumn :: Int
+  , stepInTargetEndColumn :: Maybe Int
     -- ^ End position of the range covered by the step in target. It is measured in
     -- UTF-16 code units and the client capability `columnsStartAt1` determines
     -- whether it is 0- or 1-based.
     --
   } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+defaultStepInTarget :: StepInTarget
+defaultStepInTarget
+  = StepInTarget
+  { stepInTargetId = 0
+  , stepInTargetLabel = mempty
+  , stepInTargetLine = Nothing
+  , stepInTargetColumn = Nothing
+  , stepInTargetEndLine = Nothing
+  , stepInTargetEndColumn = Nothing
+  }
 ----------------------------------------------------------------------------
 instance ToJSON StepInTarget where
   toJSON = genericToJSONWithModifier
@@ -1742,7 +1852,7 @@ data GotoTarget
     -- ^
     -- The column of the gotoTarget target.
     --
-  , gotoTargetEndLine :: Int
+  , gotoTargetEndLine :: Maybe Int
     -- ^
     -- The end line of the range covered by the gotoTarget target.
     --
@@ -1756,6 +1866,18 @@ data GotoTarget
     -- target.
     --
   } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+defaultGotoTarget :: GotoTarget
+defaultGotoTarget
+  = GotoTarget
+  { gotoTargetId = 0
+  , gotoTargetLabel = mempty
+  , gotoTargetLine = 0
+  , gotoTargetColumn = Nothing
+  , gotoTargetEndLine = Nothing
+  , gotoTargetEndColumn = Nothing
+  , gotoTargetInstructionPointerReference = Nothing
+  }
 ----------------------------------------------------------------------------
 instance ToJSON GotoTarget where
   toJSON = genericToJSONWithModifier
@@ -1828,6 +1950,20 @@ data CompletionItem
     --
   } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
+defaultCompletionItem :: CompletionItem
+defaultCompletionItem
+  = CompletionItem
+  { completionItemLabel = mempty
+  , completionItemText = Nothing
+  , completionItemSortText = Nothing
+  , completionItemDetail = Nothing
+  , completionItemType = Nothing
+  , completionItemTypeStart = Nothing
+  , completionItemTypeLength = Nothing
+  , completionItemTypeSelectionStart = Nothing
+  , completionItemTypeSelectionLength = Nothing
+  }
+----------------------------------------------------------------------------
 instance ToJSON CompletionItem where
   toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
@@ -1875,7 +2011,7 @@ instance FromJSON ExceptionBreakMode where
 ----------------------------------------------------------------------------
 data ExceptionDetails
   = ExceptionDetails
-  { exceptionDetailsMessage :: String
+  { exceptionDetailsMessage :: Maybe String
     -- ^
     -- Message contained in the exception.
     --
@@ -1896,11 +2032,22 @@ data ExceptionDetails
     -- ^
     -- Stack trace at the time the exception was thrown.
     --
-  , exceptionDetailsInnerException :: [ExceptionDetails]
+  , exceptionDetailsInnerException :: Maybe [ExceptionDetails]
     -- ^
     -- Details of the exception contained by this exception, if any.
     --
   } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+defaultExceptionDetails :: ExceptionDetails
+defaultExceptionDetails
+  = ExceptionDetails
+  { exceptionDetailsMessage = Nothing
+  , exceptionDetailstypeName = Nothing
+  , exceptionDetailsFullTypeName = Nothing
+  , exceptionDetailsEvaluateName = Nothing
+  , exceptionDetailsStackTrace = Nothing
+  , exceptionDetailsInnerException = Nothing
+  }
 ----------------------------------------------------------------------------
 instance ToJSON ExceptionDetails where
   toJSON = genericToJSONWithModifier
@@ -1946,14 +2093,10 @@ data WriteMemoryResponse
     -- Property that should be returned when `allowPartial` is true to indicate
     -- the number of bytes starting from address that were successfully written.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON WriteMemoryResponse where
-  toJSON WriteMemoryResponse {..}
-    = object
-    [ "offset"       .= writeMemoryResponseOffset
-    , "bytesWritten" .= writeMemoryResponseOffset
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data DisassembleResponse
   = DisassembleResponse
@@ -1961,13 +2104,10 @@ data DisassembleResponse
     -- ^
     -- The list of disassembled instructions.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON DisassembleResponse where
-  toJSON (DisassembleResponse instructions)
-    = object
-    [ "instructions" .= instructions
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data DisassembledInstruction
   = DisassembledInstruction
@@ -1975,7 +2115,7 @@ data DisassembledInstruction
     -- ^
     -- The address of the instruction. Treated as a hex value if prefixed with
     -- `0x`, or as a decimal value otherwise.
-  , disassembledInstructionInstructionBytes :: Text
+  , disassembledInstructionInstructionBytes :: Maybe Text
     -- ^
     -- Raw bytes representing the instruction and its operands, in an
     -- implementation-defined format.
@@ -1984,7 +2124,7 @@ data DisassembledInstruction
     -- Text representing the instruction and its operands, in an
     -- implementation-defined format.
     --
-  , disassembledInstructionSymbol :: Text
+  , disassembledInstructionSymbol :: Maybe Text
     -- ^
     -- Name of the symbol that corresponds with the location of this instruction,
     -- if any.
@@ -2014,6 +2154,20 @@ data DisassembledInstruction
     -- The end column of the range that corresponds to this instruction, if any.
     --
   } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+defaultDisassembledInstruction :: DisassembledInstruction
+defaultDisassembledInstruction
+  = DisassembledInstruction
+  { disassembledInstructionAddress = mempty
+  , disassembledInstructionInstructionBytes = Nothing
+  , disassembledInstructionInstruction = mempty
+  , disassembledInstructionSymbol = Nothing
+  , disassembledInstructionLocation = Nothing
+  , disassembledInstructionLine = Nothing
+  , disassembledInstructionColumn = Nothing
+  , disassembledInstructionEndLine = Nothing
+  , disassembledInstructionEndColumn = Nothing
+  }
 ----------------------------------------------------------------------------
 instance ToJSON DisassembledInstruction where
   toJSON = genericToJSONWithModifier
@@ -2090,19 +2244,10 @@ data StoppedEvent
     -- - Multiple function breakpoints with different function names map to the
     -- same location.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON StoppedEvent where
-  toJSON StoppedEvent{..}
-    = object
-      [ "reason"            .= stoppedEventReason
-      , "description"       .= stoppedEventDescription
-      , "threadId"          .= stoppedEventThreadId
-      , "preserveFocusHint" .= stoppedEventPreserveFocusHint
-      , "text"              .= stoppedEventText
-      , "allThreadsStopped" .= stoppedEventAllThreadsStopped
-      , "breakpointIds"     .= stoppedEventHitBreakpointIds
-      ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data ContinuedEvent
   = ContinuedEvent
@@ -2115,14 +2260,10 @@ data ContinuedEvent
     -- If `allThreadsContinued` is true, a debug adapter can announce that all
     -- threads have continued.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON ContinuedEvent where
-  toJSON ContinuedEvent {..}
-    = object
-    [ "threadId"            .= continuedEventThreadId
-    , "allThreadsContinued" .= continuedEventAllThreadsContinued
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data ExitedEvent
   = ExitedEvent
@@ -2130,13 +2271,10 @@ data ExitedEvent
     -- ^
     -- The exit code returned from the debuggee.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON ExitedEvent where
-  toJSON ExitedEvent {..}
-    = object
-    [ "exitCode" .= exitedEventExitCode
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data TerminatedEvent
   = TerminatedEvent
@@ -2147,13 +2285,10 @@ data TerminatedEvent
     -- The value is not interpreted by the client and passed unmodified as an
     -- attribute `__restart` to the `launch` and `attach` requests.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON TerminatedEvent where
-  toJSON TerminatedEvent {..}
-    = object
-    [ "restart" .= terminatedEventRestart
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data ThreadEvent
   = ThreadEvent
@@ -2162,29 +2297,24 @@ data ThreadEvent
     -- The reason for the event.
     -- Values: 'started', 'exited', etc.
     --
-  , threadEventId :: Int
+  , threadEventThreadId :: Int
     -- ^
     -- The identifier of the thread.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON ThreadEvent where
-  toJSON ThreadEvent {..}
-    = object
-    [ "reason"   .= threadEventReason
-    , "threadId" .= threadEventId
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data ThreadEventReason
-  = Started
-  | Exited
-  | CustomThreadEventReason Text
-  deriving (Show, Eq)
+  = ThreadEventReasonStarted
+  | ThreadEventReasonExited
+  | ThreadEventReason Text
+  deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON ThreadEventReason where
-  toJSON Started                          = toJSON ("started" :: Text)
-  toJSON Exited                           = toJSON ("exited" :: Text)
-  toJSON (CustomThreadEventReason custom) = toJSON custom
+  toJSON (ThreadEventReason reason)       = toJSON reason
+  toJSON reason = genericToJSONWithModifier reason
 ----------------------------------------------------------------------------
 data OutputEventCategory
   = Console
@@ -2192,21 +2322,25 @@ data OutputEventCategory
   | Stdout
   | Stderr
   | Telemetry
-  | CustomOutputEvent Text
-  deriving stock (Show, Eq)
+  | OutputEventCategory Text
+  deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+instance ToJSON OutputEventCategory where
+  toJSON (OutputEventCategory category) = toJSON category
+  toJSON category = genericToJSONWithModifier category
 ----------------------------------------------------------------------------
 data EventGroup
-  = Start
-  | StartCollapsed
-  | End
-  deriving stock (Show, Eq)
+  = EventGroupStart
+  | EventGroupStartCollapsed
+  | EventGroupEnd
+  deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON EventGroup where
-  toJSON = toJSON . enumToLowerCamel (Proxy @EventGroup)
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data OutputEvent
   = OutputEvent
-  { outputEventCategory :: Maybe OutputEvent
+  { outputEventCategory :: Maybe OutputEventCategory
     -- ^
     -- The output category. If not specified or if the category is not
     -- understood by the client, `console` is assumed.
@@ -2273,20 +2407,10 @@ data OutputEvent
     -- Additional data to report. For the `telemetry` category the data is sent
     -- to telemetry, for the other categories the data is shown in JSON format.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON OutputEvent where
-  toJSON OutputEvent{..} =
-    object
-      [ "category"           .= outputEventCategory
-      , "output"             .= outputEventOutput
-      , "group"              .= outputEventGroup
-      , "variablesReference" .= outputEventVariablesReference
-      , "source"             .= outputEventSource
-      , "line"               .= outputEventLine
-      , "column"             .= outputEventColumn
-      , "data"               .= outputEventData
-      ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data BreakpointEvent
   = BreakpointEvent
@@ -2300,20 +2424,21 @@ data BreakpointEvent
     -- The `id` attribute is used to find the target breakpoint, the other
     -- attributes are used as the new values.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+instance ToJSON BreakpointEvent where
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data EventReason
-  = New
-  | Changed
-  | Removed
+  = EventReasonNew
+  | EventReasonChanged
+  | EventReasonRemoved
   | EventReason Text
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON EventReason where
-  toJSON New                  = "new"
-  toJSON Changed              = "changed"
-  toJSON Removed              = "removed"
   toJSON (EventReason reason) = toJSON reason
+  toJSON reason = genericToJSONWithModifier reason
 ----------------------------------------------------------------------------
 data ModuleEvent
   = ModuleEvent
@@ -2387,26 +2512,19 @@ data ProcessEvent
     -- The size of a pointer or address for this process, in bits. This value
     -- may be used by clients when formatting addresses for display.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON ProcessEvent where
-  toJSON ProcessEvent{..} =
-    object
-      [ "name"           .= processEventName
-      , "processId"      .= processEventSystemProcessId
-      , "isLocalProcess" .= processEventIsLocalProcess
-      , "startMethod"    .= processEventStartMethod
-      , "pointerSize"    .= processEventPointerSize
-      ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data StartMethod
-  = Launch
-  | Attach
-  | AttachForSuspendedLaunch
-   deriving stock (Show, Eq)
+  = StartMethodLaunch
+  | StartMethodAttach
+  | StartMethodAttachForSuspendedLaunch
+   deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON StartMethod where
-  toJSON = toJSON . toLowerCase . show
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data CapabilitiesEvent
   = CapabilitiesEvent
@@ -2414,7 +2532,10 @@ data CapabilitiesEvent
     -- ^
     -- The set of updated capabilities.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+instance ToJSON CapabilitiesEvent where
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data ProgressStartEvent
   = ProgressStartEvent
@@ -2455,18 +2576,10 @@ data ProgressStartEvent
     -- Progress percentage to display (value range: 0 to 100). If omitted no
     -- percentage is shown.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON ProgressStartEvent where
-  toJSON ProgressStartEvent {..}
-    = object
-    [ "progressId"  .= progressStartEventProgressId
-    , "eventTitle"  .= progressStartEventTitle
-    , "requestId"   .= progressStartEventRequestId
-    , "cancellable" .= progressStartEventCancellable
-    , "message"     .= progressStartEventMessage
-    , "percentage"  .= progressStartEventPercentage
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data ProgressUpdateEvent
   = ProgressUpdateEvent
@@ -2484,15 +2597,10 @@ data ProgressUpdateEvent
     -- Progress percentage to display (value range: 0 to 100). If omitted no
     -- percentage is shown.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON ProgressUpdateEvent where
-  toJSON ProgressUpdateEvent {..}
-    = object
-    [ "progressId"  .= progressUpdateEventProgressId
-    , "message"     .= progressUpdateEventMessage
-    , "percentage"  .= progressUpdateEventPercentage
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data ProgressEndEvent
   = ProgressEndEvent
@@ -2505,14 +2613,10 @@ data ProgressEndEvent
     -- More detailed progress message. If omitted, the previous message (if any)
     -- is used.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON ProgressEndEvent where
-  toJSON ProgressEndEvent{..}
-    = object
-    [ "progressId" .= progressEndEventProgressId
-    , "message"    .= progressEndEventMessage
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data InvalidatedEvent
   = InvalidatedEvent
@@ -2534,15 +2638,10 @@ data InvalidatedEvent
      -- If specified, the client only needs to refetch data related to this stack
      -- frame (and the `threadId` is ignored).
      --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON InvalidatedEvent where
-  toJSON InvalidatedEvent{..} =
-    object
-      [ "areas"        .= invalidatedEventAreas
-      , "threadId"     .= invalidatedEventThreadId
-      , "stackFrameId" .= invalidatedEventStackFrameId
-      ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 -- | Logical areas that can be invalidated by the invalidated event. Values:
 -- <https://microsoft.github.io/debug-adapter-protocol/specification#Types_InvalidatedAreas>
@@ -2552,10 +2651,10 @@ data InvalidatedAreas
   | InvalidatedAreasStacks
   | InvalidatedAreasThreads
   | InvalidatedAreasVariables
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON InvalidatedAreas where
-  toJSON = enumToLowerCamel (Proxy @InvalidatedAreas)
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data MemoryEvent
   = MemoryEvent
@@ -2571,15 +2670,10 @@ data MemoryEvent
     -- ^
     -- Number of bytes updated.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON MemoryEvent where
-  toJSON MemoryEvent{..} =
-    object
-      [ "memoryReference" .= memoryEventMemoryReference
-      , "offset"          .= memoryEventOffset
-      , "count"           .= memoryEventCount
-      ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data CancelArguments
   = CancelArguments
@@ -2940,7 +3034,7 @@ data SourceBreakpoint
     -- be evaluated only if the `condition` is met, and the debug adapter should
     -- stop only if both conditions are met.
     --
-  , sourceBreakpointLogMessage :: Text
+  , sourceBreakpointLogMessage :: Maybe Text
     -- ^
     -- If this attribute exists and is non-empty, the debug adapter must not
     -- 'break' (stop)
@@ -2951,6 +3045,16 @@ data SourceBreakpoint
     -- should only be logged if those conditions are met.
     --
   } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+defaultSourceBreakpoint :: SourceBreakpoint
+defaultSourceBreakpoint
+  = SourceBreakpoint
+  { sourceBreakpointLine = 0
+  , sourceBreakpointColumn = Nothing
+  , sourceBreakpointCondition = Nothing
+  , sourceBreakpointHitCondition = Nothing
+  , sourceBreakpointLogMessage = Nothing
+  }
 ----------------------------------------------------------------------------
 instance FromJSON SourceBreakpoint where
   parseJSON = genericParseJSONWithModifier
@@ -2972,13 +3076,28 @@ data FunctionBreakpoint
     -- ^
     -- The name of the function.
     --
-  , functionBreakpointCondition :: Text
+  , functionBreakpointCondition :: Maybe Text
     -- ^
     -- An expression for conditional breakpoints.
     -- It is only honored by a debug adapter if the corresponding capability
     -- `supportsConditionalBreakpoints` is true.
     --
+  , functionBreakpointHitCondition :: Maybe Text
+    -- ^
+    -- An expression that controls how many hits of the breakpoint are ignored.
+    -- The debug adapter is expected to interpret the expression as needed.
+    -- The attribute is only honored by a debug adapter if the corresponding
+    -- capability `supportsHitConditionalBreakpoints` is true.
+    --
   } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+defaultFunctionBreakpoint :: FunctionBreakpoint
+defaultFunctionBreakpoint
+  = FunctionBreakpoint
+  { functionBreakpointName = Nothing
+  , functionBreakpointCondition = Nothing
+  , functionBreakpointHitCondition = Nothing
+  }
 ----------------------------------------------------------------------------
 instance FromJSON FunctionBreakpoint where
   parseJSON = genericParseJSONWithModifier
@@ -3074,7 +3193,10 @@ data SetDataBreakpointsArguments
     -- The contents of this array replaces all existing data breakpoints. An empty
     -- array clears all data breakpoints.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+instance FromJSON SetDataBreakpointsArguments where
+  parseJSON = genericParseJSONWithModifier
 ----------------------------------------------------------------------------
 data DataBreakpoint
   = DataBreakpoint
@@ -3096,7 +3218,10 @@ data DataBreakpoint
     -- An expression that controls how many hits of the breakpoint are ignored.
     -- The debug adapter is expected to interpret the expression as needed.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+instance FromJSON DataBreakpoint where
+  parseJSON = genericParseJSONWithModifier
 ----------------------------------------------------------------------------
 data SetInstructionBreakpointsArguments
   = SetInstructionBreakpointsArguments
@@ -3133,7 +3258,10 @@ data InstructionBreakpoint
     -- The attribute is only honored by a debug adapter if the corresponding
     -- capability `supportsHitConditionalBreakpoints` is true.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+instance FromJSON InstructionBreakpoint where
+  parseJSON = genericParseJSONWithModifier
 ----------------------------------------------------------------------------
 data ContinueArguments
   = ContinueArguments
@@ -3360,6 +3488,19 @@ data StackFrameFormat
     --
   } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
+defaultStackFrameFormat :: StackFrameFormat
+defaultStackFrameFormat
+  = StackFrameFormat
+  { stackFrameFormatParameters      = Nothing
+  , stackFrameFormatParameterTypes  = Nothing
+  , stackFrameFormatParameterNames  = Nothing
+  , stackFrameFormatParameterValues = Nothing
+  , stackFrameFormatLine            = Nothing
+  , stackFrameFormatModule          = Nothing
+  , stackFrameFormatIncludeAll      = Nothing
+  , stackFrameFormatHex             = Nothing
+  }
+----------------------------------------------------------------------------
 instance FromJSON StackFrameFormat where
   parseJSON = genericParseJSONWithModifier
 ----------------------------------------------------------------------------
@@ -3425,6 +3566,12 @@ data ValueFormat
     -- Display the value in hex.
     --
   } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+defaultValueFormat :: ValueFormat
+defaultValueFormat
+  = ValueFormat
+  { valueFormatHex = Nothing
+  }
 ----------------------------------------------------------------------------
 instance FromJSON ValueFormat where
   parseJSON = genericParseJSONWithModifier
@@ -3763,6 +3910,16 @@ data ColumnDescriptor
     --
   } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
+defaultColumnDescriptor :: ColumnDescriptor
+defaultColumnDescriptor
+  = ColumnDescriptor
+  { columnDescriptorAttributeName = mempty
+  , columnDescriptorLabel = mempty
+  , columnDescriptorFormat = Nothing
+  , columnDescriptorType = Nothing
+  , columnDescriptorWidth = Nothing
+  }
+----------------------------------------------------------------------------
 instance ToJSON ColumnDescriptor where
   toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
@@ -3771,11 +3928,11 @@ data ColumnDescriptorType
   | ColumnDescriptorTypeInt
   | ColumnDescriptorTypeBool
   | ColumnDescriptorTypeUTCTime UTCTime
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON ColumnDescriptorType where
   toJSON (ColumnDescriptorTypeUTCTime utcTime) = toJSON utcTime
-  toJSON typ = enumToLowerCamel (Proxy @ColumnDescriptorType) typ
+  toJSON typ = genericToJSONWithModifier typ
 ----------------------------------------------------------------------------
 -- | An ExceptionPathSegment represents a segment in a path that is used to match leafs or nodes in a tree of exceptions.
 -- If a segment consists of more than one name, it matches the names provided if negate is false or missing, or it matches anything except the names provided if negate is true.
@@ -3792,7 +3949,16 @@ instance FromJSON ExceptionPathSegment where
 data ModulesViewDescriptor
   = ModulesViewDescriptor
   { modulesViewDescriptorColumns :: [ColumnDescriptor]
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+instance ToJSON ModulesViewDescriptor where
+  toJSON = genericToJSONWithModifier
+----------------------------------------------------------------------------
+defaultModulesViewDescriptor :: ModulesViewDescriptor
+defaultModulesViewDescriptor
+  = ModulesViewDescriptor
+  { modulesViewDescriptorColumns = []
+  }
 ----------------------------------------------------------------------------
 data CompletionItemType
   = CompletionItemTypeMethod
@@ -3848,18 +4014,21 @@ data ExceptionBreakpointsFilter
     -- A help text providing information about the condition. This string is shown
     -- as the placeholder text for a text box and can be translated.
     --
-  } deriving stock (Show, Eq)
+  } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+defaultExceptionBreakpointsFilter :: ExceptionBreakpointsFilter
+defaultExceptionBreakpointsFilter
+  = ExceptionBreakpointsFilter
+  { exceptionBreakpointsFilterFilter = mempty
+  , exceptionBreakpointsFilterLabel = mempty
+  , exceptionBreakpointsFilterDescription = Nothing
+  , exceptionBreakpointsFilterDefault = Nothing
+  , exceptionBreakpointsFilterSupportsCondition = Nothing
+  , exceptionBreakpointsFilterConditionDescription = Nothing
+  }
 ----------------------------------------------------------------------------
 instance ToJSON ExceptionBreakpointsFilter where
-  toJSON ExceptionBreakpointsFilter{..}
-    = object
-    [ "filter"               .= exceptionBreakpointsFilterFilter
-    , "label"                .= exceptionBreakpointsFilterLabel
-    , "description"          .= exceptionBreakpointsFilterDescription
-    , "default"              .= exceptionBreakpointsFilterDefault
-    , "supportsCondition"    .= exceptionBreakpointsFilterSupportsCondition
-    , "conditionDescription" .= exceptionBreakpointsFilterConditionDescription
-    ]
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 data ConfigurationDoneArguments = ConfigurationDoneArguments
   deriving stock (Show, Eq)
@@ -3879,3 +4048,9 @@ data Level = DEBUG | INFO | WARN | ERROR
 data DebugStatus = SENT | RECEIVED
   deriving (Show, Eq)
 ----------------------------------------------------------------------------
+type VariableId  = Int
+----------------------------------------------------------------------------
+type FrameId  = Int
+----------------------------------------------------------------------------
+type ScopeId  = Int
+

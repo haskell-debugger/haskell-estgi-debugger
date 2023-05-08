@@ -33,59 +33,109 @@ module DAP.Event
   , sendStoppedEvent
   , sendTerminatedEvent
   , sendThreadEvent
+  -- * Defaults
+  , defaultContinuedEvent
+  , defaultExitedEvent
+  , defaultInvalidatedEvent
+  , defaultMemoryEvent
+  , defaultOutputEvent
+  , defaultProcessEvent
+  , defaultProgressEndEvent
+  , defaultProgressStartEvent
+  , defaultProgressUpdateEvent
+  , defaultStoppedEvent
+  , defaultTerminatedEvent
+  , defaultThreadEvent
   ) where
 ----------------------------------------------------------------------------
 import           DAP.Types
 import           DAP.Adaptor
 ----------------------------------------------------------------------------
-sendBreakpointEvent :: AdaptorClient app ()
-sendBreakpointEvent = sendSuccesfulEvent EventTypeBreakpoint (pure ())
+sendBreakpointEvent :: BreakpointEvent -> Adaptor app ()
+sendBreakpointEvent = sendSuccesfulEvent EventTypeBreakpoint . setBody
 ----------------------------------------------------------------------------
-sendCapabilitiesEvent :: AdaptorClient app ()
-sendCapabilitiesEvent = sendSuccesfulEvent EventTypeCapabilities (pure ())
+sendCapabilitiesEvent :: CapabilitiesEvent -> Adaptor app ()
+sendCapabilitiesEvent = sendSuccesfulEvent EventTypeCapabilities . setBody
 ----------------------------------------------------------------------------
-sendContinuedEvent :: ContinuedEvent -> AdaptorClient app ()
+sendContinuedEvent :: ContinuedEvent -> Adaptor app ()
 sendContinuedEvent = sendSuccesfulEvent EventTypeContinued . setBody
 ----------------------------------------------------------------------------
-sendExitedEvent :: ExitedEvent -> AdaptorClient app ()
+defaultContinuedEvent :: ContinuedEvent
+defaultContinuedEvent = ContinuedEvent 0 False
+----------------------------------------------------------------------------
+sendExitedEvent :: ExitedEvent -> Adaptor app ()
 sendExitedEvent = sendSuccesfulEvent EventTypeExited . setBody
 ----------------------------------------------------------------------------
-sendInitializedEvent :: AdaptorClient app ()
+defaultExitedEvent :: ExitedEvent
+defaultExitedEvent = ExitedEvent 0
+----------------------------------------------------------------------------
+sendInitializedEvent :: Adaptor app ()
 sendInitializedEvent = sendSuccesfulEvent EventTypeInitialized (pure ())
 ----------------------------------------------------------------------------
-sendInvalidatedEvent :: InvalidatedEvent -> AdaptorClient app ()
+sendInvalidatedEvent :: InvalidatedEvent -> Adaptor app ()
 sendInvalidatedEvent = sendSuccesfulEvent EventTypeInvalidated . setBody
 ----------------------------------------------------------------------------
-sendLoadedSourceEvent :: LoadedSourceEvent -> AdaptorClient app ()
+defaultInvalidatedEvent :: InvalidatedEvent
+defaultInvalidatedEvent = InvalidatedEvent [] Nothing Nothing
+----------------------------------------------------------------------------
+sendLoadedSourceEvent :: LoadedSourceEvent -> Adaptor app ()
 sendLoadedSourceEvent = sendSuccesfulEvent EventTypeLoadedSource . setBody
 ----------------------------------------------------------------------------
-sendMemoryEvent :: MemoryEvent -> AdaptorClient app ()
+sendMemoryEvent :: MemoryEvent -> Adaptor app ()
 sendMemoryEvent = sendSuccesfulEvent EventTypeMemory . setBody
 ----------------------------------------------------------------------------
-sendModuleEvent :: ModuleEvent -> AdaptorClient app ()
+defaultMemoryEvent :: MemoryEvent
+defaultMemoryEvent = MemoryEvent mempty 0 0
+----------------------------------------------------------------------------
+sendModuleEvent :: ModuleEvent -> Adaptor app ()
 sendModuleEvent = sendSuccesfulEvent EventTypeModule . setBody
 ----------------------------------------------------------------------------
-sendOutputEvent :: OutputEvent -> AdaptorClient app ()
+sendOutputEvent :: OutputEvent -> Adaptor app ()
 sendOutputEvent = sendSuccesfulEvent EventTypeOutput . setBody
 ----------------------------------------------------------------------------
-sendProcessEvent :: ProcessEvent -> AdaptorClient app ()
+defaultOutputEvent :: OutputEvent
+defaultOutputEvent = OutputEvent Nothing mempty Nothing Nothing Nothing Nothing Nothing Nothing
+----------------------------------------------------------------------------
+sendProcessEvent :: ProcessEvent -> Adaptor app ()
 sendProcessEvent = sendSuccesfulEvent EventTypeProcess . setBody
 ----------------------------------------------------------------------------
-sendProgressEndEvent :: ProgressEndEvent -> AdaptorClient app ()
+defaultProcessEvent :: ProcessEvent
+defaultProcessEvent = ProcessEvent mempty Nothing True Nothing Nothing
+----------------------------------------------------------------------------
+sendProgressEndEvent :: ProgressEndEvent -> Adaptor app ()
 sendProgressEndEvent = sendSuccesfulEvent EventTypeProgressEnd . setBody
 ----------------------------------------------------------------------------
-sendProgressStartEvent :: ProgressStartEvent -> AdaptorClient app ()
+defaultProgressEndEvent :: ProgressEndEvent
+defaultProgressEndEvent = ProgressEndEvent mempty Nothing
+----------------------------------------------------------------------------
+sendProgressStartEvent :: ProgressStartEvent -> Adaptor app ()
 sendProgressStartEvent = sendSuccesfulEvent EventTypeProgressStart . setBody
 ----------------------------------------------------------------------------
-sendProgressUpdateEvent :: ProgressUpdateEvent -> AdaptorClient app ()
+defaultProgressStartEvent :: ProgressStartEvent
+defaultProgressStartEvent = ProgressStartEvent mempty mempty Nothing False Nothing Nothing
+----------------------------------------------------------------------------
+sendProgressUpdateEvent :: ProgressUpdateEvent -> Adaptor app ()
 sendProgressUpdateEvent = sendSuccesfulEvent EventTypeProgressUpdate . setBody
 ----------------------------------------------------------------------------
-sendStoppedEvent :: StoppedEvent -> AdaptorClient app ()
+defaultProgressUpdateEvent :: ProgressUpdateEvent
+defaultProgressUpdateEvent = ProgressUpdateEvent mempty Nothing Nothing
+----------------------------------------------------------------------------
+sendStoppedEvent :: StoppedEvent -> Adaptor app ()
 sendStoppedEvent = sendSuccesfulEvent EventTypeStopped . setBody
 ----------------------------------------------------------------------------
-sendTerminatedEvent :: TerminatedEvent -> AdaptorClient app ()
+defaultStoppedEvent :: StoppedEvent
+defaultStoppedEvent = StoppedEvent StoppedEventReasonStep Nothing (Just 0) False Nothing False []
+----------------------------------------------------------------------------
+sendTerminatedEvent :: TerminatedEvent -> Adaptor app ()
 sendTerminatedEvent = sendSuccesfulEvent EventTypeTerminated . setBody
 ----------------------------------------------------------------------------
-sendThreadEvent :: ThreadEvent -> AdaptorClient app ()
+defaultTerminatedEvent :: TerminatedEvent
+defaultTerminatedEvent = TerminatedEvent False
+----------------------------------------------------------------------------
+sendThreadEvent :: ThreadEvent -> Adaptor app ()
 sendThreadEvent = sendSuccesfulEvent EventTypeThread . setBody
 ----------------------------------------------------------------------------
+defaultThreadEvent :: ThreadEvent
+defaultThreadEvent = ThreadEvent ThreadEventReasonStarted 0
+----------------------------------------------------------------------------
+

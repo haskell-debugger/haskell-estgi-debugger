@@ -58,6 +58,7 @@ library
       aeson
     , aeson-pretty
     , base < 5
+    , containers
     , bytestring
     , lifted-base
     , mtl

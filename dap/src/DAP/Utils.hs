@@ -59,20 +59,6 @@ toLowerCase :: String -> String
 toLowerCase [] = []
 toLowerCase (x:xs) = toLower x : xs
 ----------------------------------------------------------------------------
--- | Used to put an Enumeration constructor into lower camelcase
--- >>> enumToLowerCamel (Proxy @EventType) InitializedEventType
--- >>> String "initialized"
-enumToLowerCamel
-  :: forall a b proxy
-  . (Typeable a, Show b)
-  => proxy a
-  -> b
-  -> Value
-enumToLowerCamel proxy
-  = toJSON
-  . modifier proxy
-  . show
-----------------------------------------------------------------------------
 -- | Used as a fieldLabelModifier when generating aeson parsers
 -- >>> modifier (Proxy @Int) "intThing"
 -- >>> String "thing"

@@ -13,6 +13,7 @@
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecordWildCards            #-}
 {-# LANGUAGE DeriveAnyClass             #-}
+{-# LANGUAGE NamedFieldPuns             #-}
 {-# LANGUAGE DeriveGeneric              #-}
 {-# LANGUAGE LambdaCase                 #-}
 ----------------------------------------------------------------------------
@@ -20,8 +21,9 @@ module DAP.Server
   ( runDAPServer
   ) where
 ----------------------------------------------------------------------------
-import           Control.Monad              (when)
-import           Data.IORef                 ( newIORef, atomicWriteIORef )
+import           Control.Concurrent.MVar    ( MVar )
+import           Control.Monad              ( when )
+import           Control.Monad.Except       ( runExceptT )
 import           Control.Concurrent.MVar    ( newMVar )
 import           Control.Concurrent.STM     ( newTVarIO )
 import           Control.Exception          ( SomeException
@@ -30,14 +32,14 @@ import           Control.Exception          ( SomeException
                                             , fromException
                                             , throwIO )
 import           Control.Monad              ( forever, void )
-import           Control.Monad.State        ( evalStateT )
+import           Control.Monad.State        ( evalStateT, runStateT, execStateT )
 import           DAP.Internal               ( withGlobalLock )
 import           Data.Aeson                 ( decodeStrict, eitherDecode, Value )
 import           Data.Aeson.Encode.Pretty   ( encodePretty )
 import           Data.ByteString            ( ByteString )
 import           Data.Char                  ( isDigit )
 import           Network.Simple.TCP         ( serve, HostPreference(Host) )
-import           Network.Socket             ( socketToHandle, withSocketsDo, SockAddr )
+import           Network.Socket             ( socketToHandle, withSocketsDo, SockAddr, Socket )
 import           System.IO                  ( hClose, hSetNewlineMode, Handle, Newline(CRLF)
                                             , NewlineMode(NewlineMode, outputNL, inputNL)
                                             , IOMode(ReadWriteMode)
@@ -55,7 +57,7 @@ import           DAP.Adaptor
 runDAPServer
   :: ServerConfig
   -- ^ Top-level Server configuration, global across all debug sessions
-  -> (Command -> AdaptorClient app ())
+  -> (Command -> Adaptor app ())
   -- ^ A function to facilitate communication between DAP clients, debug adaptors and debuggers
   -> IO ()
 runDAPServer serverConfig@ServerConfig {..} communicate = withSocketsDo $ do
@@ -65,78 +67,121 @@ runDAPServer serverConfig@ServerConfig {..} communicate = withSocketsDo $ do
     withGlobalLock (putStrLn $ "TCP connection established from " ++ show address)
     handle <- socketToHandle socket ReadWriteMode
     hSetNewlineMode handle NewlineMode { inputNL  = CRLF, outputNL = CRLF }
-    connectionLock <- newMVar ()
-    seqRef <- newIORef 0
-    sessionRef <- newIORef Nothing
-    flip catch (exceptionHandler handle address) $ forever $ do
-      request <- getRequest handle address
-      atomicWriteIORef seqRef (requestSeqNum request)
-      let adaptorState = mkAdaptorState appStore request handle address seqRef connectionLock sessionRef
-      runAdaptorClient adaptorState $ communicate (command request)
+    request <- getRequest handle address serverConfig
+    adaptorState <- initAdaptorState handle address appStore serverConfig request
+    serviceClient communicate adaptorState `catch` exceptionHandler handle address
+
+-- | Initializes the Adaptor
+--
+initAdaptorState
+  :: Handle
+  -> SockAddr
+  -> AppStore app
+  -> ServerConfig
+  -> Request
+  -> IO (AdaptorState app)
+initAdaptorState handle address appStore serverConfig request = do
+  handleLock        <- newMVar ()
+  seqRef            <- pure 0
+  variablesMap      <- pure mempty
+  sessionId         <- pure Nothing
+  currentFrameId    <- pure 0
+  currentScopeId    <- pure 0
+  currentVariableId <- pure 0
+  pure AdaptorState
+    { messageType = MessageTypeResponse
+    , payload = []
+    , ..
+    }
+
+-- | Updates sequence number, puts the new request into the AdaptorState
+--
+updateAdaptorState
+  :: AdaptorState app
+  -> Request
+  -> AdaptorState app
+updateAdaptorState state request = do
+  state { request = request
+        , seqRef = requestSeqNum request
+        }
+
+----------------------------------------------------------------------------
+-- | Communication loop between editor and adaptor
+-- Evaluates the current 'Request' located in the 'AdaptorState'
+-- Fetches, updates and recurses on the next 'Request'
+--
+serviceClient
+  :: (Command -> Adaptor app ())
+  -> AdaptorState app
+  -> IO ()
+serviceClient communicate adaptorState@AdaptorState { address, handle, serverConfig, request } = do
+    nextState <- runAdaptor adaptorState $ communicate (command request)
+    nextRequest <- getRequest handle address serverConfig
+    serviceClient communicate (updateAdaptorState nextState nextRequest)
   where
     ----------------------------------------------------------------------------
-    -- | Makes empty adaptor state
-    mkAdaptorState appStore request handle address seqRef connectionLock sessionRef
-      = AdaptorState MessageTypeResponse [] appStore serverConfig
-          seqRef handle request address sessionRef connectionLock
-    ----------------------------------------------------------------------------
     -- | Utility for evaluating a monad transformer stack
-    runAdaptorClient :: AdaptorState app -> AdaptorClient app a -> IO a
-    runAdaptorClient adaptorState (AdaptorClient client) = evalStateT client adaptorState
+    runAdaptor :: AdaptorState app -> Adaptor app () -> IO (AdaptorState app)
+    runAdaptor adaptorState (Adaptor client) =
+      runStateT (runExceptT client) adaptorState >>= \case
+        (Left (errorMessage, maybeMessage), nextState) ->
+          runAdaptor nextState (sendErrorResponse errorMessage maybeMessage)
+        (Right (), nextState) -> pure nextState
+
+----------------------------------------------------------------------------
+-- | Handle exceptions from client threads, parse and log accordingly
+exceptionHandler :: Handle -> SockAddr -> SomeException -> IO ()
+exceptionHandler handle address (e :: SomeException) = do
+  let
+    dumpError
+      | Just (ParseException msg) <- fromException e
+          = logger ERROR address Nothing
+            $ withBraces
+            $ BL8.pack ("Parse Exception encountered: " <> msg)
+      | Just (err :: IOException) <- fromException e, isEOFError err
+          = logger ERROR address Nothing
+            $ withBraces "Empty payload received"
+      | otherwise
+          = logger ERROR address Nothing
+            $ withBraces
+            $ BL8.pack ("Unknown Exception: " <> show e)
+  dumpError
+  logger ERROR address Nothing (withBraces "Closing Connection")
+  hClose handle
+----------------------------------------------------------------------------
+-- | Internal function for parsing a 'ProtocolMessage' header
+-- This function also dispatches on 'talk'
+--
+-- 'parseHeader' Attempts to parse 'Content-Length: <byte-count>'
+-- Helper function for parsing message headers
+-- e.g. ("Content-Length: 11\r\n")
+getRequest :: Handle -> SockAddr -> ServerConfig -> IO Request
+getRequest handle addr ServerConfig {..} = do
+  headerBytes <- BS.hGetLine handle
+  void (BS.hGetLine handle)
+  parseHeader headerBytes >>= \case
+    Left errorMessage -> do
+      logger ERROR addr Nothing (BL8.pack errorMessage)
+      throwIO (ParseException errorMessage)
+    Right count -> do
+      body <- BS.hGet handle count
+      when debugLogging $ do
+        logger DEBUG addr (Just RECEIVED)
+          ("\n" <> encodePretty (decodeStrict body :: Maybe Value))
+      case eitherDecode (BL8.fromStrict body) of
+        Left couldn'tDecodeBody -> do
+          logger ERROR addr Nothing (BL8.pack couldn'tDecodeBody)
+          throwIO (ParseException couldn'tDecodeBody)
+        Right request ->
+          pure request
+  where
     ----------------------------------------------------------------------------
-    -- | Handle exceptions from client threads, parse and log accordingly
-    exceptionHandler :: Handle -> SockAddr -> SomeException -> IO ()
-    exceptionHandler handle address (e :: SomeException) = do
-      let
-        dumpError
-          | Just (ParseException msg) <- fromException e
-              = logger ERROR address Nothing
-                $ withBraces
-                $ BL8.pack ("Parse Exception encountered: " <> msg)
-          | Just (err :: IOException) <- fromException e, isEOFError err
-              = logger ERROR address Nothing
-                $ withBraces "Empty payload received"
-          | otherwise
-              = logger ERROR address Nothing
-                $ withBraces
-                $ BL8.pack ("Unknown Exception: " <> show e)
-      dumpError
-      logger ERROR address Nothing "[Closing Connection]"
-      hClose handle
-    ----------------------------------------------------------------------------
-    -- | Internal function for parsing a 'ProtocolMessage' header
-    -- This function also dispatches on 'talk'
-    --
-    -- 'parseHeader' Attempts to parse 'Content-Length: <byte-count>'
-    -- Helper function for parsing message headers
-    -- e.g. ("Content-Length: 11\r\n")
-    getRequest :: Handle -> SockAddr -> IO Request
-    getRequest handle addr = do
-      headerBytes <- BS.hGetLine handle
-      void (BS.hGetLine handle)
-      parseHeader headerBytes >>= \case
-        Left errorMessage -> do
-          logger ERROR addr Nothing (BL8.pack errorMessage)
-          throwIO (ParseException errorMessage)
-        Right count -> do
-          body <- BS.hGet handle count
-          when debugLogging $ do
-            logger DEBUG addr (Just RECEIVED)
-              ("\n" <> encodePretty (decodeStrict body :: Maybe Value))
-          case eitherDecode (BL8.fromStrict body) of
-            Left couldn'tDecodeBody -> do
-              logger ERROR addr Nothing (BL8.pack couldn'tDecodeBody)
-              throwIO (ParseException couldn'tDecodeBody)
-            Right request ->
-              pure request
-      where
-        ----------------------------------------------------------------------------
-        -- | Parses the HeaderPart of all ProtocolMessages
-        parseHeader :: ByteString -> IO (Either String PayloadSize)
-        parseHeader bytes = do
-          let byteSize = BS.takeWhile isDigit (BS.drop (BS.length "Content-Length: ") bytes)
-          case readMaybe (BS.unpack byteSize) of
-            Just contentLength ->
-              pure (Right contentLength)
-            Nothing ->
-              pure $ Left ("Invalid payload: " <> BS.unpack bytes)
+    -- | Parses the HeaderPart of all ProtocolMessages
+    parseHeader :: ByteString -> IO (Either String PayloadSize)
+    parseHeader bytes = do
+      let byteSize = BS.takeWhile isDigit (BS.drop (BS.length "Content-Length: ") bytes)
+      case readMaybe (BS.unpack byteSize) of
+        Just contentLength ->
+          pure (Right contentLength)
+        Nothing ->
+          pure $ Left ("Invalid payload: " <> BS.unpack bytes)
