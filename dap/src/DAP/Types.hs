@@ -172,6 +172,7 @@ module DAP.Types
   , WriteMemoryArguments               (..)
   , RunInTerminalResponse              (..)
     -- * defaults
+  , defaultBreakpoint
   , defaultBreakpointLocation
   , defaultCapabilities
   , defaultColumnDescriptor
@@ -203,6 +204,9 @@ module DAP.Types
   , VariableId
   , FrameId
   , ScopeId
+  -- * Loaded Sources Path
+  , SourcePath
+  , SourceId
   ) where
 ----------------------------------------------------------------------------
 import           Data.Word                       ( Word32 )
@@ -312,12 +316,21 @@ data AdaptorState app
   , currentScopeId     :: !Int
     -- ^ The current ScopeID
     --
+  , currentSourceReferenceId :: !Int
+    -- ^ Current source reference ID
+    --
+  , sourceReferencesMap :: !(IntMap SourcePath)
+    -- ^ Used to track source reference IDs
+    --
   }
 
--- <frameId, <scopeId, <variableId, Variable>>>
 type VariableReferences = IntMap (IntMap (IntMap Variable))
 ----------------------------------------------------------------------------
 type SessionId = Text
+----------------------------------------------------------------------------
+type SourcePath = Text
+----------------------------------------------------------------------------
+type SourceId = Int
 ----------------------------------------------------------------------------
 -- | Used to store a map of debugging sessions
 -- The 'ThreadId' is meant to be an asynchronous operation that
@@ -719,7 +732,7 @@ defaultCapabilities = capabilities
       , supportsExceptionOptions              = False
       , supportsValueFormattingOptions        = True
       , supportsExceptionInfoRequest          = False
-      , supportTerminateDebuggee              = False
+      , supportTerminateDebuggee              = True
       , supportSuspendDebuggee                = False
       , supportsDelayedStackTraceLoading      = False
       , supportsLoadedSourcesRequest          = True
@@ -2988,15 +3001,15 @@ data SetBreakpointsArguments
     -- The source location of the breakpoints; either `source.path` or
     -- `source.sourceReference` must be specified.
     --
-  , setBreakpointsArgumentsBreakpoints :: Maybe [SourceBreakpoint] -- use .!=
+  , setBreakpointsArgumentsBreakpoints :: Maybe [SourceBreakpoint]
     -- ^
     -- The code locations of the breakpoints.
     --
-  , setBreakpointArgumentsLines :: Maybe [Int] -- use .!=
+  , setBreakpointsArgumentsLines :: Maybe [Int]
     -- ^
     -- Deprecated: The code locations of the breakpoints.
     --
-  , sourceModified :: Bool
+  , setBreakpointsArgumentsSourceModified :: Bool
     -- ^
     -- A value of true indicates that the underlying source has been modified
     -- which results in new breakpoint locations.

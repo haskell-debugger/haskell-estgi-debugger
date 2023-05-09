@@ -22,13 +22,15 @@ executable dap
   ghc-options:
     -threaded
   build-depends:
-      base < 5
+      ansi-wl-pprint
+    , base < 5
     , containers
     , dap
     , bytestring
     , external-stg-interpreter
     , external-stg-syntax
     , external-stg
+    , filepath
     , lifted-base
     , network
     , unagi-chan
@@ -38,6 +40,7 @@ executable dap
     , time
     , mtl
     , yaml
+    , zip
   hs-source-dirs:
     exe
   default-language:

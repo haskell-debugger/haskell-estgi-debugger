@@ -19,26 +19,32 @@
 ----------------------------------------------------------------------------
 module Main (main) where
 ----------------------------------------------------------------------------
+import           Text.PrettyPrint.ANSI.Leijen          (pretty, plain)
+import           Codec.Archive.Zip                     (withArchive, unEntrySelector, getEntries)
+import qualified Data.Set                              as Set
 import           Control.Arrow
 import           Data.IORef
-import qualified Data.IntMap.Strict                    as I
-import qualified Data.Map.Strict                       as M
 import           Control.Exception                     hiding (catch)
 import           Control.Monad.IO.Class                (liftIO)
 import           Control.Exception.Lifted              (catch)
 import           Control.Monad
 import           Data.Aeson                            ( Value(Null), FromJSON )
+import qualified Data.IntMap.Strict                    as I
+import qualified Data.Map.Strict                       as M
+import qualified Data.Text.Encoding                    as T
 import           Data.Text                             ( Text )
 import qualified Data.Text                             as T
 import           Data.Typeable                         ( typeOf )
 import           Data.Maybe                            ( fromMaybe )
 import           GHC.Generics                          ( Generic )
 import           System.Environment                    ( lookupEnv )
+import           System.FilePath                       ((</>), takeDirectory, takeExtension)
 import           Text.Read                             ( readMaybe )
 import qualified Data.ByteString.Lazy.Char8            as BL8 ( pack, unpack, fromStrict, toStrict )
 import qualified Control.Concurrent.Chan.Unagi.Bounded as Unagi
 ----------------------------------------------------------------------------
 import           Stg.Syntax                            hiding (sourceName, Scope)
+import           Stg.Pretty                            ()
 import           Stg.Interpreter
 import           Stg.Interpreter.Debug
 import           Stg.Interpreter.Base                  hiding (lookupEnv, getCurrentThreadState, getCurrentThreadState)
@@ -68,7 +74,7 @@ getConfig = do
   ServerConfig
     <$> do fromMaybe hostDefault <$> lookupEnv "DAP_HOST"
     <*> do fromMaybe portDefault . (readMaybe =<<) <$> do lookupEnv "DAP_PORT"
-    <*> pure defaultCapabilities
+    <*> pure defaultCapabilities 
     <*> pure True
 ----------------------------------------------------------------------------
 -- | VSCode arguments are custom for attach
@@ -96,7 +102,6 @@ data ESTG
   { inChan :: Unagi.InChan DebugCommand
   , outChan :: Unagi.OutChan DebugOutput
   , fullPakPath :: String
-  , frameToScopeRef :: IORef (I.IntMap Int)
   }
 ----------------------------------------------------------------------------
 -- | Intialize ESTG interpreter
@@ -107,7 +112,7 @@ initESTG AttachArgs {..} = do
   (dbgOutI, dbgOutO) <- liftIO (Unagi.newChan 100)
   let dbgChan = DebuggerChan (dbgCmdO, dbgOutI)
   frameRef <- liftIO (newIORef scopes')
-  registerNewDebugSession __sessionId (ESTG dbgCmdI dbgOutO program frameRef)
+  registerNewDebugSession __sessionId (ESTG dbgCmdI dbgOutO program)
     $ flip catch handleDebuggerExceptions
     $ do liftIO $ loadAndRunProgram True True program [] dbgChan DbgStepByStep False
          -- ^ doesn't seem to return here
@@ -118,7 +123,9 @@ scopes' = I.fromList (zip [0..100] [ 1000 .. 2000 ])
 ----------------------------------------------------------------------------
 -- | Exception Handler
 handleDebuggerExceptions :: SomeException -> Adaptor ESTG ()
-handleDebuggerExceptions e | Just ThreadKilled <- fromException e = pure ()
+handleDebuggerExceptions e | Just ThreadKilled <- fromException e = do
+  sendTerminatedEvent (TerminatedEvent False)
+  sendExitedEvent (ExitedEvent 0)
 handleDebuggerExceptions e = do
   logError $ BL8.pack ("Caught: " <> show e)
   sendTerminatedEvent (TerminatedEvent False)
@@ -168,27 +175,144 @@ talk CommandInitialize = do
   sendInitializedEvent
 ----------------------------------------------------------------------------
 talk CommandLoadedSources = do
-  modules <- getModuleListFromFullPak
-  requestId <- getRequestSeqNum
-  sendProgressStartEvent defaultProgressStartEvent
-    { progressStartEventProgressId = "10"
-    , progressStartEventRequestId = Just requestId
-    }
-  sendLoadedSourcesResponse
-    [ defaultSource
-      { sourceName = Just (T.pack moduleName)
-      , sourceSourceReference = Just index
-      , sourcePath = Just (T.pack moduleName)
-      }
-    | (index, moduleName) <- zip [1000..] modules
-    ]
+  moduleInfos <- getModuleListFromFullPak
+  sendLoadedSourcesResponse =<< do
+    forM moduleInfos $ \ModuleInfo {..} -> do
+      hsSourceReferenceId   <- getNextSourceReferenceId
+      coreSourceReferenceId <- getNextSourceReferenceId
+      estgSourceReferenceId  <- getNextSourceReferenceId
+      stgSourceReferenceId  <- getNextSourceReferenceId
+      cmmSourceReferenceId  <- getNextSourceReferenceId
+      asmSourceReferenceId  <- getNextSourceReferenceId
+      cStubSourceReferenceId  <- getNextSourceReferenceId
+      hStubSourceReferenceId  <- getNextSourceReferenceId
+
+      let
+        hsModuleName   = T.pack (qualifiedModuleName </> "module.hs")
+        coreModuleName = T.pack (qualifiedModuleName </> "module.ghccore")
+        estgModuleName = T.pack (qualifiedModuleName </> "module.stgbin")
+        stgModuleName  = T.pack (qualifiedModuleName </> "module.ghcstg")
+        cmmModuleName  = T.pack (qualifiedModuleName </> "module.cmm")
+        asmModuleName  = T.pack (qualifiedModuleName </> "module.s")
+        cStubModuleName = T.pack (qualifiedModuleName </> "module_stub.c")
+        hStubModuleName = T.pack (qualifiedModuleName </> "module_stub.h")
+
+      addSourcePathBySourceReferenceId hsModuleName hsSourceReferenceId
+      addSourcePathBySourceReferenceId coreModuleName coreSourceReferenceId
+      addSourcePathBySourceReferenceId stgModuleName stgSourceReferenceId
+      addSourcePathBySourceReferenceId estgModuleName estgSourceReferenceId
+      addSourcePathBySourceReferenceId cmmModuleName cmmSourceReferenceId
+      addSourcePathBySourceReferenceId asmModuleName asmSourceReferenceId
+
+      when cStub (addSourcePathBySourceReferenceId cStubModuleName cStubSourceReferenceId)
+      when hStub (addSourcePathBySourceReferenceId hStubModuleName hStubSourceReferenceId)
+
+      let
+        hsSource =
+          defaultSource
+          { sourceName = Just hsModuleName
+          , sourceSourceReference = Just hsSourceReferenceId
+          , sourcePath = Just hsModuleName
+          }
+        coreSource =
+          defaultSource
+          { sourceName = Just coreModuleName
+          , sourceSourceReference = Just coreSourceReferenceId
+          , sourcePath = Just coreModuleName
+          }
+        stgSource =
+          defaultSource
+          { sourceName = Just stgModuleName
+          , sourceSourceReference = Just stgSourceReferenceId
+          , sourcePath = Just stgModuleName
+          }
+        cStubSource =
+          defaultSource
+          { sourceName = Just cStubModuleName
+          , sourceSourceReference = Just cStubSourceReferenceId
+          , sourcePath = Just cStubModuleName
+          }
+        hStubSource =
+          defaultSource
+          { sourceName = Just hStubModuleName
+          , sourceSourceReference = Just hStubSourceReferenceId
+          , sourcePath = Just hStubModuleName
+          }
+        estgSource =
+          defaultSource
+          { sourceName = Just estgModuleName
+          , sourceSourceReference = Just estgSourceReferenceId
+          , sourcePath = Just estgModuleName
+          , sourceSources = Just $
+              [ hsSource
+              , coreSource
+              , cmmSource
+              , asmSource
+              , stgSource
+              ] ++
+              [ cStubSource
+              | cStub
+              ] ++
+              [ hStubSource
+              | hStub
+              ]
+          }
+        cmmSource =
+          defaultSource
+          { sourceName = Just cmmModuleName
+          , sourceSourceReference = Just cmmSourceReferenceId
+          , sourcePath = Just cmmModuleName
+          }
+        asmSource =
+          defaultSource
+          { sourceName = Just asmModuleName
+          , sourceSourceReference = Just asmSourceReferenceId
+          , sourcePath = Just asmModuleName
+          }
+
+      pure estgSource
+
 ----------------------------------------------------------------------------
 talk CommandModules = do
   sendModulesResponse (ModulesResponse [] Nothing)
 ----------------------------------------------------------------------------
 talk CommandPause = sendPauseResponse
 ----------------------------------------------------------------------------
-talk CommandSetBreakpoints = sendSetBreakpointsResponse []
+-- {
+--     "arguments": {
+--         "breakpoints": [
+--             {
+--                 "line": 1
+--             }
+--         ],
+--         "lines": [
+--             1
+--         ],
+--         "source": {
+--             "name": "Main",
+--             "path": "Main",
+--             "sourceReference": 277
+--         },
+--         "sourceModified": false
+--     },
+--     "command": "setBreakpoints",
+--     "seq": 18,
+--     "type": "request"
+-- }
+talk CommandSetBreakpoints = do
+  SetBreakpointsArguments {..} <- getArguments
+  let maybeName = sourceName setBreakpointsArgumentsSource
+  case (setBreakpointsArgumentsBreakpoints, maybeName) of
+    (Just [ SourceBreakpoint {..} ], Just name) -> do
+      send (CmdAddBreakpoint (T.encodeUtf8 name) sourceBreakpointLine)
+      sendSetBreakpointsResponse
+        [ defaultBreakpoint { breakpointId = Just sourceBreakpointLine
+                            , breakpointSource = Just setBreakpointsArgumentsSource
+                            , breakpointVerified = True
+                            }
+        ]
+    _ ->
+      sendSetBreakpointsResponse []
 ----------------------------------------------------------------------------
 talk CommandStackTrace = do
   stackFrames <- interpreterFramesToDAPFrames <$> getCurrentThreadStack
@@ -206,19 +330,16 @@ talk CommandStackTrace = do
           { stackFrameId = stackId
           , stackFrameName = T.pack (showStackCont stackCont)
           , stackFrameSource = Nothing -- TODO: Get Frame to Source mapping (e.g. Source of GHC.IO.FD)
+            -- ^ Create internal mapping
           , stackFrameModuleId = Nothing -- TODO: Get Frame to Module mapping (e.g. GHC.IO.FD)
           }
         | (stackId, stackCont) <- zip [0..] stackFrames
         ]
 ----------------------------------------------------------------------------
 talk CommandSource = do
-  SourceArguments {..} <- getArguments
-  string <- pure (show sourceArgumentsSourceReference <> " test source")
-  sendProgressUpdateEvent defaultProgressUpdateEvent
-    { progressUpdateEventProgressId = "10"
-    , progressUpdateEventMessage = Just "Updating..."
-    }
-  sendSourceResponse (SourceResponse (T.pack string) Nothing)
+  SourceArguments {..} <- getArguments -- save path of fullpak in state
+  source <- getSourceFromFullPak sourceArgumentsSourceReference
+  sendSourceResponse (SourceResponse source Nothing)
 ----------------------------------------------------------------------------
 talk CommandThreads = do
   (threadId, threadState) <- getCurrentThreadStateWithId
@@ -230,8 +351,7 @@ talk CommandThreads = do
 talk CommandScopes = do
   ScopesArguments {..} <- getArguments
   setCurrentFrameId scopesArgumentsFrameId
-  threadState <- getCurrentThreadState
-  stackFrame <- getStackFrame
+  (threadState, stackFrame) <- getCurrentThreadStateAndStackFrame
   scopes <- generateScopes stackFrame
   sendScopesResponse (ScopesResponse scopes)
 ----------------------------------------------------------------------------
@@ -260,15 +380,25 @@ talk CommandSetInstructionBreakpoints = sendSetInstructionBreakpointsResponse []
 ----------------------------------------------------------------------------
 talk cmd = logInfo $ BL8.pack ("GOT cmd " <> show cmd)
 ----------------------------------------------------------------------------
-
-
+data ModuleInfo
+  = ModuleInfo
+  { cStub :: Bool
+    -- ^ If stubs.c is included in the .fullpak for this module
+  , hStub :: Bool
+    -- ^ If stubs.h is included in the .fullpak for this module
+  , qualifiedModuleName :: String
+    -- ^ Fully qualified module name
+  }
 ----------------------------------------------------------------------------
 -- | Retrieves list of modules from .fullpak file
-getModuleListFromFullPak :: Adaptor ESTG [String]
+-- TODO: Check if stubs file exists, if so, return it.
+getModuleListFromFullPak :: Adaptor ESTG [ModuleInfo]
 getModuleListFromFullPak = do
   ESTG {..} <- getDebugSession
   let appName = "app.ghc_stgapp"
   bytes <- liftIO (readModpakL fullPakPath appName id)
+  rawEntries <- fmap unEntrySelector . M.keys <$> withArchive fullPakPath getEntries
+  let folderNames = Set.fromList (takeDirectory <$> rawEntries)
   GhcStgApp {..} <- liftIO (decodeThrow (BL8.toStrict bytes))
   let
     unitModules :: [String]
@@ -276,8 +406,32 @@ getModuleListFromFullPak = do
       [ unitExposedModules ++ unitHiddenModules
       | UnitLinkerInfo {..} <- appLibDeps
       ]
-  pure (unitModules <> appModules)
 
+
+  let rawEntriesSet = Set.fromList rawEntries
+
+  pure
+    [ ModuleInfo
+      { cStub = (moduleName </> "module_stub.c") `Set.member` rawEntriesSet
+      , hStub = (moduleName </> "module_stub.h") `Set.member` rawEntriesSet
+      , qualifiedModuleName = moduleName
+      }
+    | moduleName <- unitModules <> appModules
+    , moduleName `Set.member` folderNames
+    ]
+----------------------------------------------------------------------------
+-- | Retrieves list of modules from .fullpak file
+getSourceFromFullPak :: SourceId -> Adaptor ESTG Text
+getSourceFromFullPak sourceId = do
+  sourcePath <- T.unpack <$> getSourcePathBySourceReferenceId sourceId
+  ESTG {..} <- getDebugSession
+  liftIO $
+    if takeExtension sourcePath == ".stgbin"
+      then do
+        m <- readModpakL fullPakPath sourcePath decodeStgbin
+        pure $ T.pack $ show $ plain (pretty m)
+      else
+        readModpakS fullPakPath sourcePath T.decodeUtf8
 ----------------------------------------------------------------------------
 -- | Asynchronous call to Debugger, sends message, does not wait for response
 send
@@ -286,7 +440,6 @@ send
 send cmd = do
   ESTG {..} <- getDebugSession
   liftIO (Unagi.writeChan inChan cmd)
-
 ----------------------------------------------------------------------------
 -- | Synchronous call to Debugger, sends message and waits for response
 sendAndWait :: DebugCommand -> Adaptor ESTG DebugOutput
@@ -295,7 +448,6 @@ sendAndWait cmd = do
   liftIO $ do
     Unagi.writeChan inChan cmd
     Unagi.readChan outChan
-
 ----------------------------------------------------------------------------
 -- | Receive Thread Report
 -- Fails if anything but 'DbgOutThreadReport' is returned
@@ -318,9 +470,16 @@ getCurrentThreadStateWithId = do
 getCurrentThreadState :: Adaptor ESTG ThreadState
 getCurrentThreadState = snd <$> getCurrentThreadStateWithId
 
+----------------------------------------------------------------------------
+-- | Receive Thread State
+getCurrentThreadStateAndStackFrame :: Adaptor ESTG (ThreadState, StackContinuation)
+getCurrentThreadStateAndStackFrame = do
+  ts <- snd <$> getCurrentThreadStateWithId
+  frameId <- getCurrentFrameId
+  pure (ts, tsStack ts !! frameId)
+
 type ThreadId = Int
 type FrameId  = Int
-
 ----------------------------------------------------------------------------
 -- | Receive Thread Report
 -- Fails if anything but 'DbgOutThreadReport' is returned
@@ -346,7 +505,7 @@ generateScopes
   -- ^ The stack instruction that we're generating Scopes for
   -> Adaptor app [Scope]
   -- ^ List of Scopes for this StackFrame
-generateScopes (CaseOf _ _ env _ _ _) = do
+generateScopes stackCont@(CaseOf _ _ env _ _ _) = do
   frameId <- getCurrentFrameId
   localsScopeIndex <- getNextScopeId
   forM_ (M.toList env) $ \(k,v) -> do
@@ -363,12 +522,12 @@ generateScopes (CaseOf _ _ env _ _ _) = do
     where
       localScope localsScopeIndex
         = defaultScope
-        { scopeName = "Locals"
+        { scopeName = "Locals: " <> T.pack (showStackCont stackCont)
         , scopePresentationHint = Just ScopePresentationHintLocals
         , scopeVariablesReference = localsScopeIndex
         , scopeNamedVariables = Just (M.size env)
         }
-generateScopes (Update addr) = do
+generateScopes stackCont@(Update addr) = do
   frameId <- getCurrentFrameId
   localsScopeIndex <- getNextScopeId
   addVariable localsScopeIndex defaultVariable
@@ -380,12 +539,12 @@ generateScopes (Update addr) = do
     where
       localScope localsScopeIndex
         = defaultScope
-        { scopeName = "Locals"
+        { scopeName = "Locals: " <> T.pack (showStackCont stackCont)
         , scopePresentationHint = Just ScopePresentationHintLocals
         , scopeVariablesReference = localsScopeIndex
         , scopeNamedVariables = Just 1
         }
-generateScopes (Apply atoms) = do
+generateScopes stackCont@(Apply atoms) = do
   frameId <- getCurrentFrameId
   localsScopeIndex <- getNextScopeId
   forM_ atoms $ \atom -> do
@@ -398,12 +557,12 @@ generateScopes (Apply atoms) = do
     where
       localScope localsScopeIndex
         = defaultScope
-        { scopeName = "Locals"
+        { scopeName = "Locals: " <> T.pack (showStackCont stackCont)
         , scopePresentationHint = Just ScopePresentationHintLocals
         , scopeVariablesReference = localsScopeIndex
         , scopeNamedVariables = Just (length atoms)
         }
-generateScopes (Catch atom blockAsync interruptible) = do
+generateScopes stackCont@(Catch atom blockAsync interruptible) = do
   frameId <- getCurrentFrameId
   localsScopeIndex <- getNextScopeId
   addVariable localsScopeIndex defaultVariable
@@ -425,12 +584,12 @@ generateScopes (Catch atom blockAsync interruptible) = do
     where
       localScope localsScopeIndex
         = defaultScope
-        { scopeName = "Locals"
+        { scopeName = "Locals: " <> T.pack (showStackCont stackCont)
         , scopePresentationHint = Just ScopePresentationHintLocals
         , scopeVariablesReference = localsScopeIndex
         , scopeNamedVariables = Just 3
         }
-generateScopes (RestoreExMask blockAsync interruptible) = do
+generateScopes stackCont@(RestoreExMask blockAsync interruptible) = do
   frameId <- getCurrentFrameId
   localsScopeIndex <- getNextScopeId
   addVariable localsScopeIndex defaultVariable
@@ -447,12 +606,12 @@ generateScopes (RestoreExMask blockAsync interruptible) = do
     where
       localScope localsScopeIndex
         = defaultScope
-        { scopeName = "Locals"
+        { scopeName = "Locals: " <> T.pack (showStackCont stackCont)
         , scopePresentationHint = Just ScopePresentationHintLocals
         , scopeVariablesReference = localsScopeIndex
         , scopeNamedVariables = Just 2
         }
-generateScopes (RunScheduler reason) = do
+generateScopes stackCont@(RunScheduler reason) = do
   frameId <- getCurrentFrameId
   localsScopeIndex <- getNextScopeId
   addVariable localsScopeIndex defaultVariable
@@ -464,12 +623,12 @@ generateScopes (RunScheduler reason) = do
     where
       localScope localsScopeIndex
         = defaultScope
-        { scopeName = "Locals"
+        { scopeName = "Locals: " <> T.pack (showStackCont stackCont)
         , scopePresentationHint = Just ScopePresentationHintLocals
         , scopeVariablesReference = localsScopeIndex
         , scopeNamedVariables = Just 1
         }
-generateScopes (Atomically atom) = do
+generateScopes stackCont@(Atomically atom) = do
   frameId <- getCurrentFrameId
   localsScopeIndex <- getNextScopeId
   addVariable localsScopeIndex defaultVariable
@@ -481,12 +640,12 @@ generateScopes (Atomically atom) = do
     where
       localScope localsScopeIndex
         = defaultScope
-        { scopeName = "Locals"
+        { scopeName = "Locals: " <> T.pack (showStackCont stackCont)
         , scopePresentationHint = Just ScopePresentationHintLocals
         , scopeVariablesReference = localsScopeIndex
         , scopeNamedVariables = Just 1
         }
-generateScopes (CatchRetry atom1 atom2 interruptible) = do
+generateScopes stackCont@(CatchRetry atom1 atom2 interruptible) = do
   frameId <- getCurrentFrameId
   localsScopeIndex <- getNextScopeId
   addVariable localsScopeIndex defaultVariable
@@ -508,12 +667,12 @@ generateScopes (CatchRetry atom1 atom2 interruptible) = do
     where
       localScope localsScopeIndex
         = defaultScope
-        { scopeName = "Locals"
+        { scopeName = "Locals: " <> T.pack (showStackCont stackCont)
         , scopePresentationHint = Just ScopePresentationHintLocals
         , scopeVariablesReference = localsScopeIndex
         , scopeNamedVariables = Just 3
         }
-generateScopes (CatchSTM atom1 atom2) = do
+generateScopes stackCont@(CatchSTM atom1 atom2) = do
   frameId <- getCurrentFrameId
   localsScopeIndex <- getNextScopeId
   addVariable localsScopeIndex defaultVariable
@@ -530,24 +689,24 @@ generateScopes (CatchSTM atom1 atom2) = do
     where
       localScope localsScopeIndex
         = defaultScope
-        { scopeName = "Locals"
+        { scopeName = "Locals: " <> T.pack (showStackCont stackCont)
         , scopePresentationHint = Just ScopePresentationHintLocals
         , scopeVariablesReference = localsScopeIndex
         , scopeNamedVariables = Just 2
         }
-generateScopes DataToTagOp = do
+generateScopes stackCont@DataToTagOp = do
   frameId <- getCurrentFrameId
   localsScopeIndex <- getNextScopeId
   pure [ localScope localsScopeIndex ]
     where
       localScope localsScopeIndex
         = defaultScope
-        { scopeName = "Locals"
+        { scopeName = "Locals: " <> T.pack (showStackCont stackCont)
         , scopePresentationHint = Just ScopePresentationHintLocals
         , scopeVariablesReference = localsScopeIndex
         , scopeNamedVariables = Just 0
         }
-generateScopes (RaiseOp atom) = do
+generateScopes stackCont@(RaiseOp atom) = do
   frameId <- getCurrentFrameId
   localsScopeIndex <- getNextScopeId
   addVariable localsScopeIndex defaultVariable
@@ -559,12 +718,12 @@ generateScopes (RaiseOp atom) = do
     where
       localScope localsScopeIndex
         = defaultScope
-        { scopeName = "Locals"
+        { scopeName = "Locals: " <> T.pack (showStackCont stackCont)
         , scopePresentationHint = Just ScopePresentationHintLocals
         , scopeVariablesReference = localsScopeIndex
         , scopeNamedVariables = Just 1
         }
-generateScopes (KeepAlive atom) = do
+generateScopes stackCont@(KeepAlive atom) = do
   frameId <- getCurrentFrameId
   localsScopeIndex <- getNextScopeId
   addVariable localsScopeIndex defaultVariable
@@ -576,12 +735,12 @@ generateScopes (KeepAlive atom) = do
     where
       localScope localsScopeIndex
         = defaultScope
-        { scopeName = "Locals"
+        { scopeName = "Locals: " <> T.pack (showStackCont stackCont)
         , scopePresentationHint = Just ScopePresentationHintLocals
         , scopeVariablesReference = localsScopeIndex
         , scopeNamedVariables = Just 1
         }
-generateScopes (DebugFrame atom) = do
+generateScopes stackCont@(DebugFrame atom) = do
   frameId <- getCurrentFrameId
   localsScopeIndex <- getNextScopeId
   addVariable localsScopeIndex defaultVariable
@@ -593,15 +752,19 @@ generateScopes (DebugFrame atom) = do
     where
       localScope localsScopeIndex
         = defaultScope
-        { scopeName = "Locals"
+        { scopeName = "Locals: " <> T.pack (showStackCont stackCont)
         , scopePresentationHint = Just ScopePresentationHintLocals
         , scopeVariablesReference = localsScopeIndex
         , scopeNamedVariables = Just 1
         }
 
 -- getAtomNameAndValueAndType = \case
---   HeapPtr addr -> ("HeapPtr", showText addr, showType addr)
---   Literal lit -> ("Literal", showLit lit
+--   HeapPtr addr -> ("HeapPtr", showText addr)
+--   Literal (LitChar char) -> (T.pack [char], "LitChar")
+--   Literal (LitString bytes) -> (T.decodeUtf8 bytes, "LitString")
+
+  -- Literal LitNullAddr -> ("0x0", showType LitNullAddr)
+  -- Literal (LitString bytes) -> ("0x0", showType LitNullAddr)
 --   | Void
 --   | PtrAtom !PtrOrigin {-# UNPACK #-}(GHC.Ptr.Ptr GHC.Word.Word8)
 --   | IntAtom {-# UNPACK #-}Int
@@ -623,46 +786,11 @@ generateScopes (DebugFrame atom) = do
 --   | StableName {-# UNPACK #-}Int
 --   | ThreadId {-# UNPACK #-}Int
 --   | LiftedUndefined
---   | Rubbish
---     where
---       showLit (LitChar char) = ("LitChar", T.pack [char], )
---       showType = Just . T.pack . show . typeOf
---       showText = T.pack . show
+--   | Rubbish (allocated but /not/ initialized)
+    -- where
+    --   showType = Just . T.pack . show . typeOf
 
 -- + on watch causes "CommandEvaluate"
 -- right click - set value - [127.0.0.1:49599][INFO][GOT cmd CommandSetVariable]
 -- right click - copy value - [127.0.0.1:49599][INFO][GOT cmd CommandEvaluate]
 -- save breakpoints from breakpoints request into AdaptrClient set, set them on the interpreter after configuration done (not attach)
-
--- sourceSTG
---   = Source
---       (Just "Main.stg")
---       (Just "./exe/stg.txt")
---       (Just 1)
---       (Just SourcePresentationHintEmphasize)
---       Nothing -- (Just "STG source code")
---       (Just [ sourceHS, sourceCore ])
---       Nothing
---       Nothing
-
--- sourceHS
---   = Source
---       (Just "Main.hs")
---       (Just "./exe/hs.txt")
---       (Just 2)
---       (Just SourcePresentationHintNormal)
---       Nothing -- (Just "Haskell source code")
---       Nothing
---       Nothing
---       Nothing
-
--- sourceCore
---   = Source
---       (Just "Main.cmm")
---       (Just "./exe/cmm.txt")
---       (Just 3)
---       (Just SourcePresentationHintDeemphasize)
---       Nothing -- (Just "Core source code")
---       Nothing
---       Nothing
---       Nothing

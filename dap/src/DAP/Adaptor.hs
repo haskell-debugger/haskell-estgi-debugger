@@ -63,6 +63,10 @@ module DAP.Adaptor
   , setCurrentVariableId
   , getCurrentVariableId
   , getNextVariableId
+  -- * Source handling
+  , getNextSourceReferenceId
+  , getSourcePathBySourceReferenceId
+  , addSourcePathBySourceReferenceId
   ) where
 ----------------------------------------------------------------------------
 import           Control.Concurrent         ( ThreadId )
@@ -233,9 +237,12 @@ send action = do
   ()            <- action
   cmd           <- getCommand
   handle        <- getHandle
-  seqNum        <- getNextSeqNum
-  address       <- getAddress
   messageType   <- gets messageType
+  seqNum        <- getNextSeqNum
+    -- if messageType == MessageTypeEvent
+    --   then getRequestSeqNum
+    --   else 
+  address       <- getAddress
   requestSeqNum <- getRequestSeqNum
 
   -- Additional fields are required to be set for 'response' or 'reverse_request' messages.
@@ -474,3 +481,27 @@ getNextVariableId :: Adaptor app VariableId
 getNextVariableId = do
   modify' $ \s -> s { currentVariableId = currentVariableId s + 1 }
   gets currentVariableId
+
+getNextSourceReferenceId :: Adaptor app SourceId
+getNextSourceReferenceId = do
+  modify' $ \s -> s { currentSourceReferenceId = currentSourceReferenceId s + 1 }
+  gets currentSourceReferenceId
+
+setSourceReferenceId :: Adaptor app SourceId
+setSourceReferenceId = do
+  modify' $ \s -> s { currentSourceReferenceId = currentSourceReferenceId s + 1 }
+  gets currentSourceReferenceId
+
+-- | DMJ: TODO: don't use (I.!)
+getSourcePathBySourceReferenceId :: SourceId -> Adaptor app SourcePath
+getSourcePathBySourceReferenceId sourceId =
+  (I.! sourceId) <$> gets sourceReferencesMap
+
+addSourcePathBySourceReferenceId
+  :: SourcePath
+  -> SourceId
+  -> Adaptor app ()
+addSourcePathBySourceReferenceId path sourceId =
+  modify' $ \s -> s
+    { sourceReferencesMap = I.insert sourceId path (sourceReferencesMap s)
+    }

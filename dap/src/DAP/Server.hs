@@ -81,13 +81,15 @@ initAdaptorState
   -> Request
   -> IO (AdaptorState app)
 initAdaptorState handle address appStore serverConfig request = do
-  handleLock        <- newMVar ()
-  seqRef            <- pure 0
-  variablesMap      <- pure mempty
-  sessionId         <- pure Nothing
-  currentFrameId    <- pure 0
-  currentScopeId    <- pure 0
-  currentVariableId <- pure 0
+  handleLock               <- newMVar ()
+  seqRef                   <- pure 0
+  variablesMap             <- pure mempty
+  sourceReferencesMap      <- pure mempty
+  sessionId                <- pure Nothing
+  currentFrameId           <- pure 0
+  currentScopeId           <- pure 0
+  currentVariableId        <- pure 0
+  currentSourceReferenceId <- pure 0
   pure AdaptorState
     { messageType = MessageTypeResponse
     , payload = []
