@@ -9,9 +9,20 @@
   "categories": [
     "Debuggers"
   ],
-  "activationEvents": [ "onDebug", "onDebugResolve:dap-extension" ],
+  "activationEvents": [ "onDebug", "onDebugResolve:dap-extension", "onDebug:closures" ],
   "main": "./out/extension.js",
   "contributes": {
+    "views": {
+      "debug": [
+        { "id": "closures"
+        , "name": "closures"
+        , "visibility": "visible"
+        , "initialSize": 30
+        , "contextualTitle": "Closures for ${workspaceFolder}"
+        , "type": "tree"
+        }
+      ]
+    },
     "debuggers": [
       {
         "type": "dap-extension",

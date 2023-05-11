@@ -42,8 +42,7 @@ import           Network.Simple.TCP         ( serve, HostPreference(Host) )
 import           Network.Socket             ( socketToHandle, withSocketsDo, SockAddr, Socket )
 import           System.IO                  ( hClose, hSetNewlineMode, Handle, Newline(CRLF)
                                             , NewlineMode(NewlineMode, outputNL, inputNL)
-                                            , IOMode(ReadWriteMode)
-                                            )
+                                            , IOMode(ReadWriteMode) )
 import           System.IO.Error            ( isEOFError )
 import           Text.Read                  ( readMaybe )
 import qualified Data.ByteString.Lazy.Char8 as BL8
@@ -95,7 +94,7 @@ initAdaptorState handle address appStore serverConfig request = do
     , payload = []
     , ..
     }
-
+----------------------------------------------------------------------------
 -- | Updates sequence number, puts the new request into the AdaptorState
 --
 updateAdaptorState
@@ -106,7 +105,6 @@ updateAdaptorState state request = do
   state { request = request
         , seqRef = requestSeqNum request
         }
-
 ----------------------------------------------------------------------------
 -- | Communication loop between editor and adaptor
 -- Evaluates the current 'Request' located in the 'AdaptorState'

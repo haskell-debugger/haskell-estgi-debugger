@@ -73,7 +73,7 @@ import           Control.Concurrent         ( ThreadId )
 import           Control.Concurrent.Lifted  ( fork, killThread )
 import           Control.Exception          ( throwIO )
 import           Control.Concurrent.STM     ( atomically, readTVarIO, modifyTVar' )
-import           Control.Monad              ( when )
+import           Control.Monad              ( when, unless )
 import           Control.Monad.Except       ( throwError )
 import           Control.Monad.State.Strict ( MonadIO(liftIO), gets, modify', put )
 import           Data.Aeson                 ( FromJSON, Result (..), fromJSON )
@@ -106,14 +106,15 @@ logError msg = logWithAddr ERROR Nothing (withBraces msg)
 logInfo :: BL8.ByteString -> Adaptor app ()
 logInfo msg = logWithAddr INFO Nothing (withBraces msg)
 ----------------------------------------------------------------------------
--- | Meant for internal consumption
+-- | Meant for internal consumption, used to signify a message has been
+-- SENT from the server
 debugMessage :: BL8.ByteString -> Adaptor app ()
 debugMessage msg = do
   shouldLog <- getDebugLogging
   addr <- getAddress
   liftIO
     $ when shouldLog
-    $ logger DEBUG addr Nothing msg
+    $ logger DEBUG addr (Just SENT) msg
 ----------------------------------------------------------------------------
 -- | Meant for external consumption
 logWithAddr :: Level -> Maybe DebugStatus -> BL8.ByteString -> Adaptor app ()
@@ -239,9 +240,6 @@ send action = do
   handle        <- getHandle
   messageType   <- gets messageType
   seqNum        <- getNextSeqNum
-    -- if messageType == MessageTypeEvent
-    --   then getRequestSeqNum
-    --   else 
   address       <- getAddress
   requestSeqNum <- getRequestSeqNum
 
@@ -251,7 +249,8 @@ send action = do
 
   -- "seq" and "type" must be set for all protocol messages
   setField "type" messageType
-  setField "seq" seqNum
+  unless (messageType == MessageTypeEvent) $
+    setField "seq" requestSeqNum
 
   -- Once all fields are set, fetch the payload for sending
   payload <- object <$> gets payload
@@ -272,7 +271,7 @@ writeToHandle
   -> Adaptor app ()
 writeToHandle addr handle evt = do
   let msg = encodeBaseProtocolMessage evt
-  logDebug SENT ("\n" <> encodePretty evt)
+  debugMessage ("\n" <> encodePretty evt)
   withConnectionLock (BS.hPutStr handle msg)
 ----------------------------------------------------------------------------
 -- | Resets Adaptor's payload
