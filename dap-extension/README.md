@@ -2,6 +2,27 @@
 
 This is the README for your extension "dap-extension". After writing up a brief description, we recommend including the following sections.
 
+## VSCode setup
+
+Enable `allow breakpoints everywhere` option in VSCode settings.
+
+## Run `dap-extension`
+
+* Open `dap-extension` folder by using the `Files/Open Folder` menu.
+* Open the `src/extension.ts` file.
+* press F5 to run the extension in a new VSCode window.
+
+## `dap-extension` debug setup and usage
+
+* Open your project folder that contains the `.fullpak` file
+* Select the debug view on the side bar
+* click to `create a launch.json file`, then select `dap-extension`
+* edit the `.fullpak` path
+
+* start `dap` server: `(cd dap ; stack build ; stack exec dap)`
+
+* press F5
+
 ## Features
 
 Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.

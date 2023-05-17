@@ -34,6 +34,7 @@
         },
         "initialConfigurations": [
           {
+            "name": "my project",
             "type": "dap-extension",
             "request": "attach",
             "program": "${workspaceFolder}/test.fullpak"
