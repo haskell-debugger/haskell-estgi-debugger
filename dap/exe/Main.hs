@@ -19,7 +19,6 @@
 ----------------------------------------------------------------------------
 module Main (main) where
 ----------------------------------------------------------------------------
-import           Text.PrettyPrint.ANSI.Leijen          (pretty, plain)
 import           Codec.Archive.Zip                     (withArchive, unEntrySelector, getEntries)
 import qualified Data.Set                              as Set
 import           Control.Arrow
@@ -36,6 +35,7 @@ import           Data.Text                             ( Text )
 import qualified Data.Text                             as T
 import           Data.Typeable                         ( typeOf )
 import           Data.Maybe                            ( fromMaybe )
+import           Data.List                             ( sortOn )
 import           GHC.Generics                          ( Generic )
 import           System.Environment                    ( lookupEnv )
 import           System.FilePath                       ((</>), takeDirectory, takeExtension)
@@ -44,7 +44,8 @@ import qualified Data.ByteString.Lazy.Char8            as BL8 ( pack, unpack, fr
 import qualified Control.Concurrent.Chan.Unagi.Bounded as Unagi
 ----------------------------------------------------------------------------
 import           Stg.Syntax                            hiding (sourceName, Scope)
-import           Stg.Pretty                            ()
+import           Stg.IRLocation
+import           Stg.Pretty
 import           Stg.Interpreter
 import           Stg.Interpreter.Debug
 import           Stg.Interpreter.Base                  hiding (lookupEnv, getCurrentThreadState, getCurrentThreadState)
@@ -114,7 +115,7 @@ initESTG AttachArgs {..} = do
   frameRef <- liftIO (newIORef scopes')
   registerNewDebugSession __sessionId (ESTG dbgCmdI dbgOutO program)
     $ flip catch handleDebuggerExceptions
-    $ do liftIO $ loadAndRunProgram True True program [] dbgChan DbgStepByStep False
+    $ do liftIO $ loadAndRunProgram True True program [] dbgChan DbgStepByStep False defaultDebugSettings
          -- ^ doesn't seem to return here
          sendTerminatedEvent (TerminatedEvent False)
          sendExitedEvent (ExitedEvent 0)
@@ -160,6 +161,26 @@ talk CommandContinue = do
   ESTG {..} <- getDebugSession
   send CmdContinue
   sendContinueResponse (ContinueResponse True)
+
+  ESTG {..} <- getDebugSession
+  _ <- liftIO $ Unagi.readChan outChan
+  resetObjectLifetimes
+  sendStoppedEvent defaultStoppedEvent
+    { stoppedEventReason = StoppedEventReasonBreakpoint
+    , stoppedEventThreadId = Just 0
+    }
+{-
+data StoppedEvent
+  = StoppedEvent
+  { stoppedEventReason :: StoppedEventReason
+  , stoppedEventDescription :: Maybe Text
+  , stoppedEventThreadId :: Maybe Int
+  , stoppedEventPreserveFocusHint :: Bool
+  , stoppedEventText :: Maybe Text
+  , stoppedEventAllThreadsStopped :: Bool
+  , stoppedEventHitBreakpointIds :: [Int]
+-}
+
 ----------------------------------------------------------------------------
 talk CommandConfigurationDone = do
   sendConfigurationDoneResponse
@@ -301,16 +322,54 @@ talk CommandPause = sendPauseResponse
 -- }
 talk CommandSetBreakpoints = do
   SetBreakpointsArguments {..} <- getArguments
-  let maybeName = sourceName setBreakpointsArgumentsSource
-  case (setBreakpointsArgumentsBreakpoints, maybeName) of
-    (Just [ SourceBreakpoint {..} ], Just name) -> do
-      send (CmdAddBreakpoint (T.encodeUtf8 name) sourceBreakpointLine)
-      sendSetBreakpointsResponse
-        [ defaultBreakpoint { breakpointId = Just sourceBreakpointLine
-                            , breakpointSource = Just setBreakpointsArgumentsSource
-                            , breakpointVerified = True
-                            }
-        ]
+  let maybeSourceRef = sourceSourceReference setBreakpointsArgumentsSource
+  case (setBreakpointsArgumentsBreakpoints, maybeSourceRef) of
+    (Just sourceBreakpoints, Just sourceRef) -> do
+      (_sourceCodeText, locations) <- getSourceFromFullPak sourceRef
+      breakpoints <- forM sourceBreakpoints $ \SourceBreakpoint{..} -> do
+        -- filter all relevant ranges
+        {-
+          SP_RhsClosureExpr
+        -}
+        let onlySupported = \case
+              SP_RhsClosureExpr{} -> True
+              _ -> False
+        let relevantLocations = filter (onlySupported . fst) $ case sourceBreakpointColumn of
+              Nothing ->
+                [ p
+                | p@(_,((startRow, startCol), (endRow, endCol))) <- locations
+                , startRow <= sourceBreakpointLine
+                , endRow >= sourceBreakpointLine
+                ]
+              Just col  ->
+                [ p
+                | p@(_,((startRow, startCol), (endRow, endCol))) <- locations
+                , startRow <= sourceBreakpointLine
+                , endRow >= sourceBreakpointLine
+                , startCol <= col
+                , endCol >= col
+                ]
+        liftIO $ putStrLn $ "relevantLocations: " ++ show relevantLocations
+        -- use the first location found
+        case sortOn snd relevantLocations of
+          (stgPoint@(SP_RhsClosureExpr closureName), ((startRow, startCol), (endRow, endCol))) : _ -> do
+            let hitCount = fromMaybe 0 (sourceBreakpointHitCondition >>= readMaybe . T.unpack) :: Int
+            send (CmdAddBreakpoint closureName hitCount)
+            pure $ defaultBreakpoint
+              { breakpointVerified  = True
+              , breakpointSource    = Just setBreakpointsArgumentsSource
+              , breakpointLine      = Just startRow
+              , breakpointColumn    = Just startCol
+              , breakpointEndLine   = Just endRow
+              , breakpointEndColumn = Just endCol
+              }
+          _ ->
+            pure $ defaultBreakpoint
+              { breakpointVerified  = False
+              , breakpointSource    = Just setBreakpointsArgumentsSource
+              , breakpointMessage   = Just "no code found"
+              }
+      sendSetBreakpointsResponse breakpoints
     _ ->
       sendSetBreakpointsResponse []
 ----------------------------------------------------------------------------
@@ -338,7 +397,7 @@ talk CommandStackTrace = do
 ----------------------------------------------------------------------------
 talk CommandSource = do
   SourceArguments {..} <- getArguments -- save path of fullpak in state
-  source <- getSourceFromFullPak sourceArgumentsSourceReference
+  (source, _locations) <- getSourceFromFullPak sourceArgumentsSourceReference
   sendSourceResponse (SourceResponse source Nothing)
 ----------------------------------------------------------------------------
 talk CommandThreads = do
@@ -421,7 +480,7 @@ getModuleListFromFullPak = do
     ]
 ----------------------------------------------------------------------------
 -- | Retrieves list of modules from .fullpak file
-getSourceFromFullPak :: SourceId -> Adaptor ESTG Text
+getSourceFromFullPak :: SourceId -> Adaptor ESTG (Text, [(StgPoint, SrcRange)])
 getSourceFromFullPak sourceId = do
   sourcePath <- T.unpack <$> getSourcePathBySourceReferenceId sourceId
   ESTG {..} <- getDebugSession
@@ -429,9 +488,10 @@ getSourceFromFullPak sourceId = do
     if takeExtension sourcePath == ".stgbin"
       then do
         m <- readModpakL fullPakPath sourcePath decodeStgbin
-        pure $ T.pack $ show $ plain (pretty m)
-      else
-        readModpakS fullPakPath sourcePath T.decodeUtf8
+        pure . pShow $ pprModule m
+      else do
+        ir <- readModpakS fullPakPath sourcePath T.decodeUtf8
+        pure (ir, [])
 ----------------------------------------------------------------------------
 -- | Asynchronous call to Debugger, sends message, does not wait for response
 send
