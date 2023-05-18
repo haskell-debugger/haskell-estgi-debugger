@@ -207,6 +207,8 @@ module DAP.Types
   -- * Loaded Sources Path
   , SourcePath
   , SourceId
+  -- * Debug Thread state
+  , DebuggerThreadState (..)
   ) where
 ----------------------------------------------------------------------------
 import           Data.Word                       ( Word32 )
@@ -336,7 +338,18 @@ type SourceId = Int
 -- The 'ThreadId' is meant to be an asynchronous operation that
 -- allows initalized debuggers to emit custom events
 -- when they receive messages from the debugger
-type AppStore app = TVar (H.HashMap SessionId (ThreadId, app))
+type AppStore app = TVar (H.HashMap SessionId (DebuggerThreadState, app))
+
+-- | 'DebuggerThreadState'
+-- State to hold both the thread that executes the debugger and the thread used
+-- to propagate output events from the debugger + debuggee to the editor (via the
+-- DAP server).
+data DebuggerThreadState
+  = DebuggerThreadState
+  { debuggerThread :: ThreadId
+  , debuggerOutputEventThread :: ThreadId
+  }
+
 ----------------------------------------------------------------------------
 data ServerConfig
   = ServerConfig
