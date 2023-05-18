@@ -67,6 +67,9 @@ module DAP.Adaptor
   , getNextSourceReferenceId
   , getSourcePathBySourceReferenceId
   , addSourcePathBySourceReferenceId
+  -- * Internal use
+  , send
+  , sendRaw
   ) where
 ----------------------------------------------------------------------------
 import           Control.Concurrent         ( ThreadId )
@@ -225,6 +228,16 @@ getAppStore = gets appStore
 ----------------------------------------------------------------------------
 getCommand :: Adaptor app Command
 getCommand = command <$> gets request
+----------------------------------------------------------------------------
+-- | 'sendRaw' (internal use only)
+-- Sends a raw JSON payload to the editor. No "seq", "type" or "command" fields are set.
+-- The message is still encoded with the ProtocolMessage Header, byte count, and CRLF.
+--
+sendRaw :: ToJSON value => value -> Adaptor app ()
+sendRaw value = do
+  handle        <- getHandle
+  address       <- getAddress
+  writeToHandle address handle value
 ----------------------------------------------------------------------------
 -- | Function for constructing a payload and writing bytes to a socket.
 -- This function takes care of incrementing sequence numbers
