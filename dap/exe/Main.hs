@@ -60,7 +60,7 @@ import           Stg.IO
 import           Stg.Program
 import           Data.Yaml                             hiding (Array)
 ----------------------------------------------------------------------------
-import           DAP
+import           DAP                                   hiding (send)
 ----------------------------------------------------------------------------
 -- | DAP entry point
 -- Extracts configuration information from the environment
