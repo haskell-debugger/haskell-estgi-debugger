@@ -35,6 +35,7 @@ executable dap
     , network
     , unagi-chan
     , unordered-containers
+    , string-conversions
     , aeson
     , text
     , time
