@@ -177,15 +177,20 @@ registerNewDebugSession
   :: SessionId
   -> app
   -> Adaptor app ()
+  -- ^ Action to run debugger (operates in a forked thread that gets killed when disconnect is set)
+  -> Adaptor app ()
   -- ^ Long running operation, meant to be used as a sink for
   -- the debugger to emit events and for the adaptor to forward to the editor
   -- This function should be in a 'forever' loop waiting on the read end of
   -- a debugger channel.
   -> Adaptor app ()
-registerNewDebugSession k v action = do
+registerNewDebugSession k v debuggerExecution outputEventSink = do
   store <- gets appStore
-  tid <- fork (resetAdaptorStatePayload >> action)
-  liftIO . atomically $ modifyTVar' store (H.insert k (tid, v))
+  debuggerThreadState <-
+    DebuggerThreadState
+      <$> fork (debuggerExecution)
+      <*> fork (outputEventSink)
+  liftIO . atomically $ modifyTVar' store (H.insert k (debuggerThreadState, v))
   setDebugSessionId k
   logInfo $ BL8.pack $ "Registered new debug session: " <> unpack k
 ----------------------------------------------------------------------------
@@ -194,7 +199,7 @@ getDebugSession = do
   (_, _, app) <- getDebugSessionWithThreadIdAndSessionId
   pure app
 ----------------------------------------------------------------------------
-getDebugSessionWithThreadIdAndSessionId :: Adaptor app (SessionId, ThreadId, app)
+getDebugSessionWithThreadIdAndSessionId :: Adaptor app (SessionId, DebuggerThreadState, app)
 getDebugSessionWithThreadIdAndSessionId = do
   sessionId <- getDebugSessionId
   appStore <- liftIO . readTVarIO =<< getAppStore
@@ -217,10 +222,11 @@ getDebugSessionWithThreadIdAndSessionId = do
 ----------------------------------------------------------------------------
 destroyDebugSession :: Adaptor app ()
 destroyDebugSession = do
-  (sessionId, tid, app) <- getDebugSessionWithThreadIdAndSessionId
+  (sessionId, DebuggerThreadState {..}, app) <- getDebugSessionWithThreadIdAndSessionId
   store <- getAppStore
   liftIO $ do
-    killThread tid
+    killThread debuggerThread
+    killThread debuggerOutputEventThread
     atomically $ modifyTVar' store (H.delete sessionId)
   logInfo $ BL8.pack $ "SessionId " <> unpack sessionId <> " ended"
 ----------------------------------------------------------------------------

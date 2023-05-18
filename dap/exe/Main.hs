@@ -119,7 +119,12 @@ initESTG AttachArgs {..} = do
   let dbgChan = DebuggerChan (dbgCmdO, dbgOutI)
   flip catch handleDebuggerExceptions
     $ registerNewDebugSession __sessionId (ESTG dbgCmdI dbgOutO program)
-    $ liftIO $ loadAndRunProgram True True program [] dbgChan DbgStepByStep False defaultDebugSettings
+      (liftIO $ loadAndRunProgram True True program [] dbgChan DbgStepByStep False defaultDebugSettings)
+      (pure ())
+      -- (forever $ do
+      --     message <- liftIO (Unagi.readChan dbgOutO)
+      --     -- logic goes here for conversion to 'OutputEvent'
+      --     sendOutputEvent defaultOutputEvent)
 ----------------------------------------------------------------------------
 -- | Exception Handler
 handleDebuggerExceptions :: SomeException -> Adaptor ESTG ()
