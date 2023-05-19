@@ -141,14 +141,9 @@ initESTG AttachArgs {..} = do
 -- | Debug Event Handler
 handleDebugEvents :: DebuggerChan -> Adaptor ESTG ()
 handleDebugEvents DebuggerChan{..} = forever $ do
-  logInfo "handleDebugEvents - waiting"
   dbgEvent <- liftIO (Unagi.readChan dbgAsyncEventOut)
-  logInfo . BL8.pack $ "handleDebugEvents - got event: " ++ show dbgEvent
   ESTG {..} <- getDebugSession
   let sendEvent ev = sendSuccesfulEvent ev . setBody
-  logInfo . BL8.pack $ show ("handleDebugEvents", dbgEvent)
-  sendStoppedEvent defaultStoppedEvent
-  logInfo "handleDebugEvents - did: sendStoppedEvent defaultStoppedEvent"
   case dbgEvent of
     DbgEventStopped -> do
       sendEvent EventTypeStopped $ object
