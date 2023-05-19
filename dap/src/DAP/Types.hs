@@ -282,9 +282,6 @@ data AdaptorState app
     -- ^ Configuration information for the ServerConfig
     -- Identical across all debugging sessions
     --
-  , seqRef              :: !Seq
-    -- ^ Thread local sequence number, updating as responses and events are set
-    --
   , handle              :: Handle
     -- ^ Connection Handle
     --

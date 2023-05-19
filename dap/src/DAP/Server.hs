@@ -19,6 +19,7 @@
 ----------------------------------------------------------------------------
 module DAP.Server
   ( runDAPServer
+  , readPayload
   ) where
 ----------------------------------------------------------------------------
 import           Control.Concurrent.MVar    ( MVar )
@@ -34,7 +35,7 @@ import           Control.Exception          ( SomeException
 import           Control.Monad              ( forever, void )
 import           Control.Monad.State        ( evalStateT, runStateT, execStateT )
 import           DAP.Internal               ( withGlobalLock )
-import           Data.Aeson                 ( decodeStrict, eitherDecode, Value )
+import           Data.Aeson                 ( decodeStrict, eitherDecode, Value, FromJSON )
 import           Data.Aeson.Encode.Pretty   ( encodePretty )
 import           Data.ByteString            ( ByteString )
 import           Data.Char                  ( isDigit )
@@ -60,15 +61,17 @@ runDAPServer
   -- ^ A function to facilitate communication between DAP clients, debug adaptors and debuggers
   -> IO ()
 runDAPServer serverConfig@ServerConfig {..} communicate = withSocketsDo $ do
-  putStrLn ("Running DAP server on " <> show port <> "...")
+  when debugLogging $ putStrLn ("Running DAP server on " <> show port <> "...")
   appStore <- newTVarIO mempty
   serve (Host host) (show port) $ \(socket, address) -> do
-    withGlobalLock (putStrLn $ "TCP connection established from " ++ show address)
+    when debugLogging $ do
+      withGlobalLock $ do
+        putStrLn $ "TCP connection established from " ++ show address
     handle <- socketToHandle socket ReadWriteMode
-    hSetNewlineMode handle NewlineMode { inputNL  = CRLF, outputNL = CRLF }
+    hSetNewlineMode handle NewlineMode { inputNL = CRLF, outputNL = CRLF }
     request <- getRequest handle address serverConfig
     adaptorState <- initAdaptorState handle address appStore serverConfig request
-    serviceClient communicate adaptorState `catch` exceptionHandler handle address
+    serviceClient communicate adaptorState `catch` exceptionHandler handle address debugLogging
 
 -- | Initializes the Adaptor
 --
@@ -81,7 +84,6 @@ initAdaptorState
   -> IO (AdaptorState app)
 initAdaptorState handle address appStore serverConfig request = do
   handleLock               <- newMVar ()
-  seqRef                   <- pure 0
   variablesMap             <- pure mempty
   sourceReferencesMap      <- pure mempty
   sessionId                <- pure Nothing
@@ -95,17 +97,6 @@ initAdaptorState handle address appStore serverConfig request = do
     , ..
     }
 ----------------------------------------------------------------------------
--- | Updates sequence number, puts the new request into the AdaptorState
---
-updateAdaptorState
-  :: AdaptorState app
-  -> Request
-  -> AdaptorState app
-updateAdaptorState state request = do
-  state { request = request
-        , seqRef = requestSeqNum request
-        }
-----------------------------------------------------------------------------
 -- | Communication loop between editor and adaptor
 -- Evaluates the current 'Request' located in the 'AdaptorState'
 -- Fetches, updates and recurses on the next 'Request'
@@ -117,7 +108,7 @@ serviceClient
 serviceClient communicate adaptorState@AdaptorState { address, handle, serverConfig, request } = do
     nextState <- runAdaptor adaptorState $ communicate (command request)
     nextRequest <- getRequest handle address serverConfig
-    serviceClient communicate (updateAdaptorState nextState nextRequest)
+    serviceClient communicate nextState { request = nextRequest }
   where
     ----------------------------------------------------------------------------
     -- | Utility for evaluating a monad transformer stack
@@ -130,8 +121,8 @@ serviceClient communicate adaptorState@AdaptorState { address, handle, serverCon
 
 ----------------------------------------------------------------------------
 -- | Handle exceptions from client threads, parse and log accordingly
-exceptionHandler :: Handle -> SockAddr -> SomeException -> IO ()
-exceptionHandler handle address (e :: SomeException) = do
+exceptionHandler :: Handle -> SockAddr -> Bool -> SomeException -> IO ()
+exceptionHandler handle address shouldLog (e :: SomeException) = do
   let
     dumpError
       | Just (ParseException msg) <- fromException e
@@ -139,14 +130,15 @@ exceptionHandler handle address (e :: SomeException) = do
             $ withBraces
             $ BL8.pack ("Parse Exception encountered: " <> msg)
       | Just (err :: IOException) <- fromException e, isEOFError err
-          = logger ERROR address Nothing
-            $ withBraces "Empty payload received"
+          = logger INFO address (Just SENT)
+            $ withBraces "Client has ended its connection"
       | otherwise
           = logger ERROR address Nothing
             $ withBraces
             $ BL8.pack ("Unknown Exception: " <> show e)
-  dumpError
-  logger ERROR address Nothing (withBraces "Closing Connection")
+  when shouldLog $ do
+    dumpError
+    logger INFO address (Just SENT) (withBraces "Closing Connection")
   hClose handle
 ----------------------------------------------------------------------------
 -- | Internal function for parsing a 'ProtocolMessage' header
@@ -174,14 +166,26 @@ getRequest handle addr ServerConfig {..} = do
           throwIO (ParseException couldn'tDecodeBody)
         Right request ->
           pure request
-  where
-    ----------------------------------------------------------------------------
-    -- | Parses the HeaderPart of all ProtocolMessages
-    parseHeader :: ByteString -> IO (Either String PayloadSize)
-    parseHeader bytes = do
-      let byteSize = BS.takeWhile isDigit (BS.drop (BS.length "Content-Length: ") bytes)
-      case readMaybe (BS.unpack byteSize) of
-        Just contentLength ->
-          pure (Right contentLength)
-        Nothing ->
-          pure $ Left ("Invalid payload: " <> BS.unpack bytes)
+----------------------------------------------------------------------------
+-- | Parses the HeaderPart of all ProtocolMessages
+parseHeader :: ByteString -> IO (Either String PayloadSize)
+parseHeader bytes = do
+  let byteSize = BS.takeWhile isDigit (BS.drop (BS.length "Content-Length: ") bytes)
+  case readMaybe (BS.unpack byteSize) of
+    Just contentLength ->
+      pure (Right contentLength)
+    Nothing ->
+      pure $ Left ("Invalid payload: " <> BS.unpack bytes)
+
+-- | Helper function to parse a 'ProtocolMessage', extracting it's body.
+-- used for testing.
+--
+readPayload :: FromJSON json => Handle -> IO (Either String json)
+readPayload handle = do
+  headerBytes <- BS.hGetLine handle
+  void (BS.hGetLine handle)
+  parseHeader headerBytes >>= \case
+    Left e -> pure (Left e)
+    Right count -> do
+      body <- BS.hGet handle count
+      pure $ eitherDecode (BL8.fromStrict body)
