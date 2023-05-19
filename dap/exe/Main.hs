@@ -25,21 +25,25 @@ import           Data.List
 import           Data.String.Conversions               (cs)
 import           Text.PrettyPrint.ANSI.Leijen          (pretty, plain)
 import           Codec.Archive.Zip                     (withArchive, unEntrySelector, getEntries)
+import           Data.IntSet                           ( IntSet )
+import qualified Data.IntSet                           as IntSet
 import qualified Data.Set                              as Set
 import           Control.Arrow
 import           Data.IORef
 import           Control.Exception                     hiding (catch)
 import           Control.Monad.IO.Class                (liftIO)
 import           Control.Exception.Lifted              (catch)
+import           Control.Monad.State.Strict            ( gets )
 import           Control.Monad
 import           Data.Aeson                            ( Value(Null), FromJSON )
 import qualified Data.IntMap.Strict                    as I
 import qualified Data.Map.Strict                       as M
+import           Data.Map.Strict                       ( Map )
 import qualified Data.Text.Encoding                    as T
 import           Data.Text                             ( Text )
 import qualified Data.Text                             as T
 import           Data.Typeable                         ( typeOf )
-import           Data.Maybe                            ( fromMaybe )
+import           Data.Maybe                            ( fromMaybe, catMaybes )
 import           Data.List                             ( sortOn )
 import           GHC.Generics                          ( Generic )
 import           System.Environment                    ( lookupEnv )
@@ -47,6 +51,8 @@ import           System.FilePath                       ((</>), takeDirectory, ta
 import           Text.Read                             ( readMaybe )
 import qualified Data.ByteString.Lazy.Char8            as BL8 ( pack, unpack, fromStrict, toStrict )
 import qualified Control.Concurrent.Chan.Unagi.Bounded as Unagi
+import           Control.Concurrent.MVar               ( MVar )
+import qualified Control.Concurrent.MVar               as MVar
 ----------------------------------------------------------------------------
 import           Stg.Syntax                            hiding (sourceName, Scope)
 import           Stg.IRLocation
@@ -105,26 +111,63 @@ data AttachArgs
 -- | External STG Interpreter application internal state
 data ESTG
   = ESTG
-  { inChan :: Unagi.InChan DebugCommand
-  , outChan :: Unagi.OutChan DebugOutput
-  , fullPakPath :: String
+  { debuggerChan  :: DebuggerChan
+  , fullPakPath   :: String
+  , breakpointMap :: Map StgPoint IntSet
   }
 ----------------------------------------------------------------------------
 -- | Intialize ESTG interpreter
 ----------------------------------------------------------------------------
 initESTG :: AttachArgs -> Adaptor ESTG ()
 initESTG AttachArgs {..} = do
-  (dbgCmdI, dbgCmdO) <- liftIO (Unagi.newChan 100)
-  (dbgOutI, dbgOutO) <- liftIO (Unagi.newChan 100)
-  let dbgChan = DebuggerChan (dbgCmdO, dbgOutI)
+  (dbgAsyncI, dbgAsyncO) <- liftIO (Unagi.newChan 100)
+  dbgRequestMVar <- liftIO MVar.newEmptyMVar
+  dbgResponseMVar <- liftIO MVar.newEmptyMVar
+  let dbgChan = DebuggerChan
+        { dbgSyncRequest    = dbgRequestMVar
+        , dbgSyncResponse   = dbgResponseMVar
+        , dbgAsyncEventIn   = dbgAsyncI
+        , dbgAsyncEventOut  = dbgAsyncO
+        }
+      estg = ESTG
+        { debuggerChan  = dbgChan
+        , fullPakPath   = program
+        , breakpointMap = mempty
+        }
+  adaptorStateMVar <- gets adaptorStateMVar
   flip catch handleDebuggerExceptions
-    $ registerNewDebugSession __sessionId (ESTG dbgCmdI dbgOutO program)
-      (liftIO $ loadAndRunProgram True True program [] dbgChan DbgStepByStep False defaultDebugSettings)
-      (pure ())
-      -- (forever $ do
-      --     message <- liftIO (Unagi.readChan dbgOutO)
-      --     -- logic goes here for conversion to 'OutputEvent'
-      --     sendOutputEvent defaultOutputEvent)
+    $ registerNewDebugSession __sessionId estg
+      (loadAndRunProgram True True program [] dbgChan DbgStepByStep False defaultDebugSettings)
+      (handleDebugEvents dbgChan adaptorStateMVar)
+
+----------------------------------------------------------------------------
+-- | Debug Event Handler
+handleDebugEvents :: DebuggerChan -> MVar (AdaptorState ESTG) -> IO ()
+handleDebugEvents DebuggerChan{..} adaptorStateMVar = forever $ do
+  dbgEvent <- liftIO (Unagi.readChan dbgAsyncEventOut)
+  runAdaptorWith adaptorStateMVar $ do
+    ESTG {..} <- getDebugSession
+    let sendEvent ev = sendSuccesfulEvent ev . setBody
+    case dbgEvent of
+      DbgEventStopped -> do
+        resetObjectLifetimes
+        sendEvent EventTypeStopped $ object
+          [ "reason"             .= String "step"
+          , "allThreadsStopped"  .= True
+          ]
+
+      DbgEventHitBreakpoint bkpName -> do
+        resetObjectLifetimes
+        sendEvent EventTypeStopped . object $
+          [ "reason"             .= String "breakpoint"
+          , "allThreadsStopped"  .= True
+          ] ++
+          catMaybes
+            [ do
+                idSet <- M.lookup (SP_RhsClosureExpr bkpName) breakpointMap
+                Just ("hitBreakpointIds" .= idSet)
+            ]
+
 ----------------------------------------------------------------------------
 -- | Exception Handler
 handleDebuggerExceptions :: SomeException -> Adaptor ESTG ()
@@ -136,17 +179,6 @@ handleDebuggerExceptions e = do
   sendTerminatedEvent (TerminatedEvent False)
   sendExitedEvent (ExitedEvent 1)
 
-sendStop =
-  sendStoppedEvent $
-      StoppedEvent
-           StoppedEventReasonPause
-           (Just "paused")
-           (Just 0)
-           False
-           (Just "starting now?")
-           False
-           []
-
 pathToName path =
   case splitFileName (cs path) of
     (init -> moduleName, takeExtension -> ".ghccore") ->
@@ -155,6 +187,20 @@ pathToName path =
       cs (moduleName <> ".stg")
     (init -> moduleName, takeExtension -> ext) ->
       cs (moduleName <> ext)
+
+----------------------------------------------------------------------------
+-- | Clears the currently known breakpoint set
+clearBreakpoints :: Adaptor ESTG ()
+clearBreakpoints = do
+  updateDebugSession $ \estg -> estg {breakpointMap = mempty}
+
+----------------------------------------------------------------------------
+-- | Adds new BreakpointId for a givent StgPoint
+addNewBreakpoint :: StgPoint -> Adaptor ESTG BreakpointId
+addNewBreakpoint stgPoint = do
+  bkpId <- getNextBreakpointId
+  updateDebugSession $ \estg@ESTG{..} -> estg {breakpointMap = M.insertWith mappend stgPoint (IntSet.singleton bkpId) breakpointMap}
+  pure bkpId
 
 ----------------------------------------------------------------------------
 -- | Main function where requests are received and Events + Responses are returned.
@@ -173,32 +219,12 @@ talk CommandAttach = do
 ----------------------------------------------------------------------------
 talk CommandContinue = do
   ESTG {..} <- getDebugSession
-  send CmdContinue
+  sendAndWait CmdContinue
   sendContinueResponse (ContinueResponse True)
-
-  ESTG {..} <- getDebugSession
-  _ <- liftIO $ Unagi.readChan outChan
-  resetObjectLifetimes
-  sendStoppedEvent defaultStoppedEvent
-    { stoppedEventReason = StoppedEventReasonBreakpoint
-    , stoppedEventThreadId = Just 0
-    }
-{-
-data StoppedEvent
-  = StoppedEvent
-  { stoppedEventReason :: StoppedEventReason
-  , stoppedEventDescription :: Maybe Text
-  , stoppedEventThreadId :: Maybe Int
-  , stoppedEventPreserveFocusHint :: Bool
-  , stoppedEventText :: Maybe Text
-  , stoppedEventAllThreadsStopped :: Bool
-  , stoppedEventHitBreakpointIds :: [Int]
--}
 
 ----------------------------------------------------------------------------
 talk CommandConfigurationDone = do
   sendConfigurationDoneResponse
-  sendStop
 ----------------------------------------------------------------------------
 talk CommandDisconnect = do
   destroyDebugSession
@@ -326,6 +352,7 @@ talk CommandPause = sendPauseResponse
 talk CommandSetBreakpoints = do
   SetBreakpointsArguments {..} <- getArguments
   let maybeSourceRef = sourceSourceReference setBreakpointsArgumentsSource
+  clearBreakpoints
   case (setBreakpointsArgumentsBreakpoints, maybeSourceRef) of
     (Just sourceBreakpoints, Just sourceRef) -> do
       (_sourceCodeText, locations) <- getSourceFromFullPak sourceRef
@@ -357,7 +384,8 @@ talk CommandSetBreakpoints = do
         case sortOn snd relevantLocations of
           (stgPoint@(SP_RhsClosureExpr closureName), ((startRow, startCol), (endRow, endCol))) : _ -> do
             let hitCount = fromMaybe 0 (sourceBreakpointHitCondition >>= readMaybe . T.unpack) :: Int
-            send (CmdAddBreakpoint closureName hitCount)
+            sendAndWait (CmdAddBreakpoint closureName hitCount)
+            bkpId <- addNewBreakpoint stgPoint
             pure $ defaultBreakpoint
               { breakpointVerified  = True
               , breakpointSource    = Just setBreakpointsArgumentsSource
@@ -365,6 +393,7 @@ talk CommandSetBreakpoints = do
               , breakpointColumn    = Just startCol
               , breakpointEndLine   = Just endRow
               , breakpointEndColumn = Just endCol
+              , breakpointId        = Just bkpId
               }
           _ ->
             pure $ defaultBreakpoint
@@ -429,12 +458,7 @@ talk CommandVariables = do
 talk CommandNext = do
   NextArguments {..} <- getArguments
   sendAndWait CmdStep
-  resetObjectLifetimes
-  sendStoppedEvent defaultStoppedEvent
-    { stoppedEventReason   = StoppedEventReasonStep
-    , stoppedEventText     = Just "Stepping..."
-    , stoppedEventThreadId = Just 0
-    }
+  pure ()
 ----------------------------------------------------------------------------
 talk CommandBreakpointLocations       = sendBreakpointLocationsResponse []
 talk CommandSetDataBreakpoints        = sendSetDataBreakpointsResponse []
@@ -508,21 +532,14 @@ getSourceFromFullPak sourceId = do
         ir <- readModpakS fullPakPath sourcePath T.decodeUtf8
         pure (ir, [])
 ----------------------------------------------------------------------------
--- | Asynchronous call to Debugger, sends message, does not wait for response
-send
-  :: DebugCommand
-  -> Adaptor ESTG ()
-send cmd = do
-  ESTG {..} <- getDebugSession
-  liftIO (Unagi.writeChan inChan cmd)
-----------------------------------------------------------------------------
 -- | Synchronous call to Debugger, sends message and waits for response
 sendAndWait :: DebugCommand -> Adaptor ESTG DebugOutput
 sendAndWait cmd = do
   ESTG {..} <- getDebugSession
+  let DebuggerChan{..} = debuggerChan
   liftIO $ do
-    Unagi.writeChan inChan cmd
-    Unagi.readChan outChan
+    MVar.putMVar dbgSyncRequest cmd
+    MVar.takeMVar dbgSyncResponse
 ----------------------------------------------------------------------------
 -- | Receive Thread Report
 -- Fails if anything but 'DbgOutThreadReport' is returned
