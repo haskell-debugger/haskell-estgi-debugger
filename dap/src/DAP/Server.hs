@@ -19,12 +19,14 @@
 ----------------------------------------------------------------------------
 module DAP.Server
   ( runDAPServer
+  , runAdaptorWith
   ) where
 ----------------------------------------------------------------------------
 import           Control.Concurrent.MVar    ( MVar )
 import           Control.Monad              ( when )
 import           Control.Monad.Except       ( runExceptT )
-import           Control.Concurrent.MVar    ( newMVar )
+import           Control.Concurrent.MVar    ( newMVar, newEmptyMVar, modifyMVar_
+                                            , takeMVar, putMVar, readMVar )
 import           Control.Concurrent.STM     ( newTVarIO )
 import           Control.Exception          ( SomeException
                                             , IOException
@@ -32,7 +34,7 @@ import           Control.Exception          ( SomeException
                                             , fromException
                                             , throwIO )
 import           Control.Monad              ( forever, void )
-import           Control.Monad.State        ( evalStateT, runStateT, execStateT )
+import           Control.Monad.State        ( evalStateT, runStateT, execStateT, gets )
 import           DAP.Internal               ( withGlobalLock )
 import           Data.Aeson                 ( decodeStrict, eitherDecode, Value )
 import           Data.Aeson.Encode.Pretty   ( encodePretty )
@@ -67,8 +69,8 @@ runDAPServer serverConfig@ServerConfig {..} communicate = withSocketsDo $ do
     handle <- socketToHandle socket ReadWriteMode
     hSetNewlineMode handle NewlineMode { inputNL  = CRLF, outputNL = CRLF }
     request <- getRequest handle address serverConfig
-    adaptorState <- initAdaptorState handle address appStore serverConfig request
-    serviceClient communicate adaptorState `catch` exceptionHandler handle address
+    adaptorStateMVar <- initAdaptorState handle address appStore serverConfig request
+    serviceClient communicate adaptorStateMVar `catch` exceptionHandler handle address
 
 -- | Initializes the Adaptor
 --
@@ -78,7 +80,7 @@ initAdaptorState
   -> AppStore app
   -> ServerConfig
   -> Request
-  -> IO (AdaptorState app)
+  -> IO (MVar (AdaptorState app))
 initAdaptorState handle address appStore serverConfig request = do
   handleLock               <- newMVar ()
   seqRef                   <- pure 0
@@ -89,11 +91,14 @@ initAdaptorState handle address appStore serverConfig request = do
   currentScopeId           <- pure 0
   currentVariableId        <- pure 0
   currentSourceReferenceId <- pure 0
-  pure AdaptorState
+  currentBreakpointId      <- pure 0
+  adaptorStateMVar         <- newEmptyMVar
+  putMVar adaptorStateMVar AdaptorState
     { messageType = MessageTypeResponse
     , payload = []
     , ..
     }
+  pure adaptorStateMVar
 ----------------------------------------------------------------------------
 -- | Updates sequence number, puts the new request into the AdaptorState
 --
@@ -112,21 +117,35 @@ updateAdaptorState state request = do
 --
 serviceClient
   :: (Command -> Adaptor app ())
-  -> AdaptorState app
+  -> MVar (AdaptorState app)
   -> IO ()
-serviceClient communicate adaptorState@AdaptorState { address, handle, serverConfig, request } = do
-    nextState <- runAdaptor adaptorState $ communicate (command request)
-    nextRequest <- getRequest handle address serverConfig
-    serviceClient communicate (updateAdaptorState nextState nextRequest)
-  where
-    ----------------------------------------------------------------------------
-    -- | Utility for evaluating a monad transformer stack
-    runAdaptor :: AdaptorState app -> Adaptor app () -> IO (AdaptorState app)
-    runAdaptor adaptorState (Adaptor client) =
-      runStateT (runExceptT client) adaptorState >>= \case
-        (Left (errorMessage, maybeMessage), nextState) ->
-          runAdaptor nextState (sendErrorResponse errorMessage maybeMessage)
-        (Right (), nextState) -> pure nextState
+serviceClient communicate adaptorStateMVar = do
+  runAdaptorWith adaptorStateMVar $ do
+    request <- gets request
+    communicate (command request)
+
+  -- HINT: getRequest is a blocking action so we use readMVar to leave MVar available
+  AdaptorState { address, handle, serverConfig } <- readMVar adaptorStateMVar
+  nextRequest <- getRequest handle address serverConfig
+  modifyMVar_ adaptorStateMVar $ \s -> pure $ updateAdaptorState s nextRequest
+
+  -- loop: serve the next request
+  serviceClient communicate adaptorStateMVar
+
+----------------------------------------------------------------------------
+-- | Evaluates Adaptor action by using and updating the state in the MVar
+runAdaptorWith :: MVar (AdaptorState app) -> Adaptor app () -> IO ()
+runAdaptorWith adaptorStateMVar action = do
+  modifyMVar_ adaptorStateMVar (flip runAdaptor action)
+
+----------------------------------------------------------------------------
+-- | Utility for evaluating a monad transformer stack
+runAdaptor :: AdaptorState app -> Adaptor app () -> IO (AdaptorState app)
+runAdaptor adaptorState (Adaptor client) =
+  runStateT (runExceptT client) adaptorState >>= \case
+    (Left (errorMessage, maybeMessage), nextState) ->
+      runAdaptor nextState (sendErrorResponse errorMessage maybeMessage)
+    (Right (), nextState) -> pure nextState
 
 ----------------------------------------------------------------------------
 -- | Handle exceptions from client threads, parse and log accordingly

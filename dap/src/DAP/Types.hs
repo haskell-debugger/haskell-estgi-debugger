@@ -201,6 +201,7 @@ module DAP.Types
     -- * Variables
   , VariableReferences (..)
     -- * Object Lifetime Types
+  , BreakpointId
   , VariableId
   , FrameId
   , ScopeId
@@ -298,6 +299,9 @@ data AdaptorState app
     -- ^ Session ID
     -- Local to the current connection's debugger session
     --
+  , adaptorStateMVar    :: MVar (AdaptorState app)
+    -- ^ Shared state for serializable concurrency
+    --
   , handleLock          :: MVar ()
     -- ^ A lock for writing to a Handle. One lock is created per connection
     -- and exists for the duration of that connection
@@ -323,6 +327,9 @@ data AdaptorState app
     --
   , sourceReferencesMap :: !(IntMap SourcePath)
     -- ^ Used to track source reference IDs
+    --
+  , currentBreakpointId :: !Int
+    -- ^ The current BreakpointId
     --
   }
 
@@ -4079,4 +4086,5 @@ type VariableId  = Int
 type FrameId  = Int
 ----------------------------------------------------------------------------
 type ScopeId  = Int
-
+----------------------------------------------------------------------------
+type BreakpointId = Int
