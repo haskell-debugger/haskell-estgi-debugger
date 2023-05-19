@@ -91,6 +91,7 @@ initAdaptorState handle address appStore serverConfig request = do
   currentScopeId           <- pure 0
   currentVariableId        <- pure 0
   currentSourceReferenceId <- pure 0
+  currentBreakpointId      <- pure 0
   pure AdaptorState
     { messageType = MessageTypeResponse
     , payload = []

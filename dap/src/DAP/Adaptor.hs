@@ -63,6 +63,8 @@ module DAP.Adaptor
   , setCurrentVariableId
   , getCurrentVariableId
   , getNextVariableId
+  -- * Breakpoint handling
+  , getNextBreakpointId
   -- * Source handling
   , getNextSourceReferenceId
   , getSourcePathBySourceReferenceId
@@ -493,6 +495,11 @@ getNextVariableId :: Adaptor app VariableId
 getNextVariableId = do
   modify' $ \s -> s { currentVariableId = currentVariableId s + 1 }
   gets currentVariableId
+
+getNextBreakpointId :: Adaptor app BreakpointId
+getNextBreakpointId = do
+  modify' $ \s -> s { currentBreakpointId = currentBreakpointId s + 1 }
+  gets currentBreakpointId
 
 getNextSourceReferenceId :: Adaptor app SourceId
 getNextSourceReferenceId = do
