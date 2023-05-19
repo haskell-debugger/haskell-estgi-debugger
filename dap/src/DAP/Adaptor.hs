@@ -152,11 +152,6 @@ getAddress = gets address
 getHandle :: Adaptor app Handle
 getHandle = gets handle
 ----------------------------------------------------------------------------
-getNextSeqNum :: Adaptor app Seq
-getNextSeqNum = do
-  modify' $ \s -> s { seqRef = seqRef s + 1 }
-  gets seqRef
-----------------------------------------------------------------------------
 getRequestSeqNum :: Adaptor app Seq
 getRequestSeqNum = gets (requestSeqNum . request)
 ----------------------------------------------------------------------------
@@ -188,8 +183,8 @@ registerNewDebugSession k v debuggerExecution outputEventSink = do
   store <- gets appStore
   debuggerThreadState <-
     DebuggerThreadState
-      <$> fork (debuggerExecution)
-      <*> fork (outputEventSink)
+      <$> fork (resetAdaptorStatePayload >> debuggerExecution)
+      <*> fork (resetAdaptorStatePayload >> outputEventSink)
   liftIO . atomically $ modifyTVar' store (H.insert k (debuggerThreadState, v))
   setDebugSessionId k
   logInfo $ BL8.pack $ "Registered new debug session: " <> unpack k
@@ -205,7 +200,6 @@ getDebugSessionWithThreadIdAndSessionId = do
   appStore <- liftIO . readTVarIO =<< getAppStore
   case H.lookup sessionId appStore of
     Nothing -> do
-      -- appNotFound sessionId
       sendError (ErrorMessage (pack "")) Nothing
     Just (tid, app) ->
       pure (sessionId, tid, app)
@@ -258,9 +252,9 @@ send action = do
   cmd           <- getCommand
   handle        <- getHandle
   messageType   <- gets messageType
-  seqNum        <- getNextSeqNum
   address       <- getAddress
   requestSeqNum <- getRequestSeqNum
+  let seqNum    =  requestSeqNum + 1
 
   -- Additional fields are required to be set for 'response' or 'reverse_request' messages.
   when (messageType == MessageTypeResponse) (setField "request_seq" requestSeqNum)
@@ -269,7 +263,7 @@ send action = do
   -- "seq" and "type" must be set for all protocol messages
   setField "type" messageType
   unless (messageType == MessageTypeEvent) $
-    setField "seq" requestSeqNum
+    setField "seq" seqNum
 
   -- Once all fields are set, fetch the payload for sending
   payload <- object <$> gets payload
