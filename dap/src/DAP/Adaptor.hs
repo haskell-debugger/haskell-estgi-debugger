@@ -76,6 +76,7 @@ module DAP.Adaptor
 ----------------------------------------------------------------------------
 import           Control.Concurrent         ( ThreadId )
 import           Control.Concurrent.Lifted  ( fork, killThread )
+import qualified Control.Concurrent.MVar    as MVar
 import           Control.Exception          ( throwIO )
 import           Control.Concurrent.STM     ( atomically, readTVarIO, modifyTVar' )
 import           Control.Monad              ( when, unless )
@@ -183,12 +184,21 @@ registerNewDebugSession
   -> Adaptor app ()
 registerNewDebugSession k v debuggerExecution outputEventSink = do
   store <- gets appStore
+  lock1 <- liftIO $ MVar.newEmptyMVar
+  lock2 <- liftIO $ MVar.newEmptyMVar
+  let setupAndRun lock action = do
+        liftIO (MVar.takeMVar lock)
+        resetAdaptorStatePayload
+        action
+  setDebugSessionId k
   debuggerThreadState <-
     DebuggerThreadState
-      <$> fork (resetAdaptorStatePayload >> debuggerExecution)
-      <*> fork (resetAdaptorStatePayload >> outputEventSink)
-  liftIO . atomically $ modifyTVar' store (H.insert k (debuggerThreadState, v))
-  setDebugSessionId k
+      <$> fork (setupAndRun lock1 debuggerExecution)
+      <*> fork (setupAndRun lock2 outputEventSink)
+  liftIO $ do
+    atomically $ modifyTVar' store (H.insert k (debuggerThreadState, v))
+    MVar.putMVar lock1 ()
+    MVar.putMVar lock2 ()
   logInfo $ BL8.pack $ "Registered new debug session: " <> unpack k
 ----------------------------------------------------------------------------
 getDebugSession :: Adaptor a a
