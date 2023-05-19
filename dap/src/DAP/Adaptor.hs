@@ -33,6 +33,7 @@ module DAP.Adaptor
   , getRequestSeqNum
   -- * Debug Session
   , registerNewDebugSession
+  , updateDebugSession
   , getDebugSession
   , getDebugSessionId
   , destroyDebugSession
@@ -63,6 +64,8 @@ module DAP.Adaptor
   , setCurrentVariableId
   , getCurrentVariableId
   , getNextVariableId
+  -- * Breakpoint handling
+  , getNextBreakpointId
   -- * Source handling
   , getNextSourceReferenceId
   , getSourcePathBySourceReferenceId
@@ -85,6 +88,8 @@ import           Data.Aeson.Encode.Pretty   ( encodePretty )
 import           Data.Aeson.Types           ( object, Key, KeyValue((.=)), ToJSON )
 import qualified Data.IntMap.Strict         as I
 import           Data.IntMap.Strict         (IntMap)
+import qualified Data.IntSet                as IntSet
+import           Data.IntSet                (IntSet)
 import           Data.Text                  ( unpack, Text, pack )
 import           Network.Socket             ( SockAddr )
 import           System.IO                  ( Handle )
@@ -176,9 +181,9 @@ setDebugSessionId session = modify' $ \s -> s { sessionId = Just session }
 registerNewDebugSession
   :: SessionId
   -> app
-  -> Adaptor app ()
+  -> IO ()
   -- ^ Action to run debugger (operates in a forked thread that gets killed when disconnect is set)
-  -> Adaptor app ()
+  -> IO ()
   -- ^ Long running operation, meant to be used as a sink for
   -- the debugger to emit events and for the adaptor to forward to the editor
   -- This function should be in a 'forever' loop waiting on the read end of
@@ -186,13 +191,19 @@ registerNewDebugSession
   -> Adaptor app ()
 registerNewDebugSession k v debuggerExecution outputEventSink = do
   store <- gets appStore
-  debuggerThreadState <-
+  debuggerThreadState <- liftIO $
     DebuggerThreadState
-      <$> fork (debuggerExecution)
-      <*> fork (outputEventSink)
+      <$> fork debuggerExecution
+      <*> fork outputEventSink
   liftIO . atomically $ modifyTVar' store (H.insert k (debuggerThreadState, v))
   setDebugSessionId k
   logInfo $ BL8.pack $ "Registered new debug session: " <> unpack k
+----------------------------------------------------------------------------
+updateDebugSession :: (app -> app) -> Adaptor app ()
+updateDebugSession updateFun = do
+  sessionId <- getDebugSessionId
+  store <- gets appStore
+  liftIO . atomically $ modifyTVar' store (H.adjust (fmap updateFun) sessionId)
 ----------------------------------------------------------------------------
 getDebugSession :: Adaptor a a
 getDebugSession = do
@@ -499,6 +510,11 @@ getNextVariableId :: Adaptor app VariableId
 getNextVariableId = do
   modify' $ \s -> s { currentVariableId = currentVariableId s + 1 }
   gets currentVariableId
+
+getNextBreakpointId :: Adaptor app BreakpointId
+getNextBreakpointId = do
+  modify' $ \s -> s { currentBreakpointId = currentBreakpointId s + 1 }
+  gets currentBreakpointId
 
 getNextSourceReferenceId :: Adaptor app SourceId
 getNextSourceReferenceId = do
