@@ -9,48 +9,51 @@
   "categories": [
     "Debuggers"
   ],
-  "activationEvents": [ "onDebug", "onDebugResolve:dap-extension", "onDebug:closures" ],
+  "activationEvents": [ "onDebug", "onDebugResolve:dap-extension", "onDebug:garbageCollect" ],
   "main": "./out/extension.js",
   "contributes": {
-    "views": {
-      "debug": [
-        { "id": "closures"
-        , "name": "closures"
-        , "visibility": "visible"
-        , "initialSize": 30
-        , "contextualTitle": "Closures for ${workspaceFolder}"
-        , "type": "tree"
-        }
+    "menus": {
+      "debug/toolBar":
+	[
+	 { "when": "inDebugMode",
+           "command": "dap-extension.garbageCollect",
+           "group": "debug"
+         }
       ]
     },
-    "debuggers": [
+    "commands" :[
       {
-        "type": "dap-extension",
-        "languages": [
-          "Haskell"
-        ],
-        "program": "${workspaceFolder}/test.fullpak",
-        "label": "dap-extension",
-        "configurationAttributes": {
-          "attach": {
-            "required": ["program"],
-            "properties": {
-              "program": {
-                "type": "string",
-                "description": "Absolute path to the program",
-                "default": "${workspaceFolder}/test.fullpak"
-              }
-            }
-          }
-        },
-        "initialConfigurations": [
-          {
-            "name": "my project",
-            "type": "dap-extension",
-            "request": "attach",
-            "program": "${workspaceFolder}/test.fullpak"
-          }
-        ]
+	"command": "dap-extension.garbageCollect",
+        "category": "debug",
+	"title": "Garbage Collect"
+      }
+    ],
+    "debuggers": [
+      { "type": "dap-extension",
+	"languages": [
+	    "haskell"
+	],
+	"program": "${workspaceFolder}/test.fullpak",
+	"label": "dap-extension",
+	"configurationAttributes": {
+	  "attach": {
+	    "required": ["program"],
+	    "properties": {
+	      "program": {
+		"type": "string",
+		"description": "Absolute path to the program",
+		"default": "${workspaceFolder}/test.fullpak"
+	      }
+	    }
+	  }
+	},
+	"initialConfigurations": [
+	  {
+	    "type": "Connect to DAP ESTGi",
+	    "request": "attach",
+	    "program": "${workspaceFolder}/test.fullpak"
+	  }
+	]
       }
     ]
   },

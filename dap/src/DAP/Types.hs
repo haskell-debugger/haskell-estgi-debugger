@@ -978,7 +978,7 @@ data Command
   | CommandReadMemory
   | CommandWriteMemory
   | CommandDisassemble
-  | CommandUnknown Text
+  | CustomCommand Text
   deriving stock (Show, Eq, Read, Generic)
 ----------------------------------------------------------------------------
 instance FromJSON Command where
@@ -987,12 +987,12 @@ instance FromJSON Command where
       Just cmd ->
         pure cmd
       Nothing ->
-        pure (CommandUnknown command)
+        pure (CustomCommand command)
     where
       name = show (typeRep (Proxy @Command))
 ----------------------------------------------------------------------------
 instance ToJSON Command where
-  toJSON (CommandUnknown x) = toJSON x
+  toJSON (CustomCommand x) = toJSON x
   toJSON cmd = genericToJSONWithModifier cmd
 ----------------------------------------------------------------------------
 data ErrorMessage
