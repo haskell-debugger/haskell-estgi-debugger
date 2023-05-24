@@ -171,6 +171,11 @@ talk CommandAttach = do
       emitEvent :: DebugOutput -> Adaptor ESTG ()
       emitEvent cmd = logInfo $ BL8.pack (show cmd)
 ----------------------------------------------------------------------------
+talk (CustomCommand "garbageCollect") = do
+  logInfo "Running garbage collection..."
+  sendAndWait (CmdInternal "gc")
+  sendSuccesfulEmptyResponse
+----------------------------------------------------------------------------
 talk CommandContinue = do
   ESTG {..} <- getDebugSession
   send CmdContinue
