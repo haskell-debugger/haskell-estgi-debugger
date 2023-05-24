@@ -134,18 +134,17 @@ initESTG AttachArgs {..} = do
         , fullPakPath   = program
         , breakpointMap = mempty
         }
-  adaptorStateMVar <- gets adaptorStateMVar
   flip catch handleDebuggerExceptions
     $ registerNewDebugSession __sessionId estg
       (loadAndRunProgram True True program [] dbgChan DbgStepByStep False defaultDebugSettings)
-      (handleDebugEvents dbgChan adaptorStateMVar)
+      (handleDebugEvents dbgChan)
 
 ----------------------------------------------------------------------------
 -- | Debug Event Handler
-handleDebugEvents :: DebuggerChan -> MVar (AdaptorState ESTG) -> IO ()
-handleDebugEvents DebuggerChan{..} adaptorStateMVar = forever $ do
+handleDebugEvents :: DebuggerChan -> (Adaptor ESTG () -> IO ()) -> IO ()
+handleDebugEvents DebuggerChan{..} withAdaptor = forever $ do
   dbgEvent <- liftIO (Unagi.readChan dbgAsyncEventOut)
-  runAdaptorWith adaptorStateMVar $ do
+  withAdaptor $ do
     ESTG {..} <- getDebugSession
     let sendEvent ev = sendSuccesfulEvent ev . setBody
     case dbgEvent of

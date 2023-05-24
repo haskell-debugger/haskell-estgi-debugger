@@ -19,7 +19,6 @@
 ----------------------------------------------------------------------------
 module DAP.Server
   ( runDAPServer
-  , runAdaptorWith
   ) where
 ----------------------------------------------------------------------------
 import           Control.Concurrent.MVar    ( MVar )
@@ -131,21 +130,6 @@ serviceClient communicate adaptorStateMVar = do
 
   -- loop: serve the next request
   serviceClient communicate adaptorStateMVar
-
-----------------------------------------------------------------------------
--- | Evaluates Adaptor action by using and updating the state in the MVar
-runAdaptorWith :: MVar (AdaptorState app) -> Adaptor app () -> IO ()
-runAdaptorWith adaptorStateMVar action = do
-  modifyMVar_ adaptorStateMVar (flip runAdaptor action)
-
-----------------------------------------------------------------------------
--- | Utility for evaluating a monad transformer stack
-runAdaptor :: AdaptorState app -> Adaptor app () -> IO (AdaptorState app)
-runAdaptor adaptorState (Adaptor client) =
-  runStateT (runExceptT client) adaptorState >>= \case
-    (Left (errorMessage, maybeMessage), nextState) ->
-      runAdaptor nextState (sendErrorResponse errorMessage maybeMessage)
-    (Right (), nextState) -> pure nextState
 
 ----------------------------------------------------------------------------
 -- | Handle exceptions from client threads, parse and log accordingly

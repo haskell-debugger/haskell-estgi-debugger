@@ -73,15 +73,21 @@ module DAP.Adaptor
   -- * Internal use
   , send
   , sendRaw
+  -- * Internal function used to execute actions on behalf of the DAP server
+  -- from child threads (useful for handling asynchronous debugger events).
+  , runAdaptorWith
   ) where
 ----------------------------------------------------------------------------
 import           Control.Concurrent         ( ThreadId )
+import           Control.Concurrent.MVar    ( newMVar, newEmptyMVar, modifyMVar_
+                                            , takeMVar, putMVar, readMVar, MVar )
 import           Control.Concurrent.Lifted  ( fork, killThread )
 import           Control.Exception          ( throwIO )
 import           Control.Concurrent.STM     ( atomically, readTVarIO, modifyTVar' )
 import           Control.Monad              ( when, unless )
-import           Control.Monad.Except       ( throwError )
-import           Control.Monad.State.Strict ( MonadIO(liftIO), gets, modify', put )
+import           Control.Monad.Except       ( runExceptT, throwError )
+import           Control.Monad.State        ( evalStateT, runStateT, execStateT, gets
+                                            , MonadIO(liftIO), gets, modify', put )
 import           Data.Aeson                 ( FromJSON, Result (..), fromJSON )
 import           Data.Maybe                 ( fromMaybe )
 import           Data.Aeson.Encode.Pretty   ( encodePretty )
@@ -183,18 +189,30 @@ registerNewDebugSession
   -> app
   -> IO ()
   -- ^ Action to run debugger (operates in a forked thread that gets killed when disconnect is set)
-  -> IO ()
+  -> ((Adaptor app () -> IO ()) -> IO ())
   -- ^ Long running operation, meant to be used as a sink for
   -- the debugger to emit events and for the adaptor to forward to the editor
   -- This function should be in a 'forever' loop waiting on the read end of
   -- a debugger channel.
+  --
+  -- This event handler thread also takes an argument that allows any child thread to execute
+  -- events on behalf of the DAP server (in 'Adaptor app ()'). This function should always be
+  -- used when sending events to the editor from the debugger (or from any forked thread).
+  --
+  -- >
+  -- > registerNewDebugSession sessionId appState loadDebugger $ \withAdaptor ->
+  -- >   forever $ getDebuggerOutput >>= \output -> do
+  -- >     withAdaptor $ sendOutputEvent defaultOutputEvent { outputEventOutput = output }
+  -- >
+  --
   -> Adaptor app ()
 registerNewDebugSession k v debuggerExecution outputEventSink = do
   store <- gets appStore
+  adaptorStateMVar <- gets adaptorStateMVar
   debuggerThreadState <- liftIO $
     DebuggerThreadState
       <$> fork debuggerExecution
-      <*> fork outputEventSink
+      <*> fork (outputEventSink (runAdaptorWith adaptorStateMVar))
   liftIO . atomically $ modifyTVar' store (H.insert k (debuggerThreadState, v))
   setDebugSessionId k
   logInfo $ BL8.pack $ "Registered new debug session: " <> unpack k
@@ -539,3 +557,18 @@ addSourcePathBySourceReferenceId path sourceId =
   modify' $ \s -> s
     { sourceReferencesMap = I.insert sourceId path (sourceReferencesMap s)
     }
+
+----------------------------------------------------------------------------
+-- | Evaluates Adaptor action by using and updating the state in the MVar
+runAdaptorWith :: MVar (AdaptorState app) -> Adaptor app () -> IO ()
+runAdaptorWith adaptorStateMVar action = do
+  modifyMVar_ adaptorStateMVar (flip runAdaptor action)
+
+----------------------------------------------------------------------------
+-- | Utility for evaluating a monad transformer stack
+runAdaptor :: AdaptorState app -> Adaptor app () -> IO (AdaptorState app)
+runAdaptor adaptorState (Adaptor client) =
+  runStateT (runExceptT client) adaptorState >>= \case
+    (Left (errorMessage, maybeMessage), nextState) ->
+      runAdaptor nextState (sendErrorResponse errorMessage maybeMessage)
+    (Right (), nextState) -> pure nextState
