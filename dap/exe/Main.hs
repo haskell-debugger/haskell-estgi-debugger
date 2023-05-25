@@ -117,8 +117,8 @@ data ESTG
   = ESTG
   { debuggerChan      :: DebuggerChan
   , fullPakPath       :: String
+  , moduleInfoMap     :: Map Text ModuleInfo
   , breakpointMapRef  :: IORef (Map Stg.Breakpoint IntSet)
-  , loadedSourcesRef  :: IORef [Source]
 
   -- application specific resource handling
 
@@ -143,11 +143,11 @@ data ESTG
 ----------------------------------------------------------------------------
 initESTG :: AttachArgs -> Adaptor ESTG ()
 initESTG AttachArgs {..} = do
+  moduleInfos <- liftIO $ getModuleListFromFullPak program
   (dbgAsyncI, dbgAsyncO) <- liftIO (Unagi.newChan 100)
   dbgRequestMVar <- liftIO MVar.newEmptyMVar
   dbgResponseMVar <- liftIO MVar.newEmptyMVar
   breakpointMapRef <- liftIO $ newIORef mempty
-  loadedSourcesRef <- liftIO $ newIORef mempty
   let dbgChan = DebuggerChan
         { dbgSyncRequest    = dbgRequestMVar
         , dbgSyncResponse   = dbgResponseMVar
@@ -157,8 +157,8 @@ initESTG AttachArgs {..} = do
       estg = ESTG
         { debuggerChan          = dbgChan
         , fullPakPath           = program
+        , moduleInfoMap         = M.fromList [(cs $ qualifiedModuleName mi, mi) | mi <- moduleInfos]
         , breakpointMapRef      = breakpointMapRef
-        , loadedSourcesRef      = loadedSourcesRef
         , dapSourceRefMap       = Bimap.empty
         , dapFrameIdMap         = Bimap.empty
         , dapVariablesRefMap    = Bimap.empty
@@ -267,104 +267,11 @@ talk CommandInitialize = do
 ----------------------------------------------------------------------------
 
 talk CommandLoadedSources = do
-  moduleInfos <- getModuleListFromFullPak
   sendLoadedSourcesResponse =<< do
-    sourceList <- forM moduleInfos $ \ModuleInfo {..} -> case isCSource of
-      True -> do
-        let cSourcesSourcePath = cs qualifiedModuleName
-        cSourcesSourceRef <- getSourceRef $ SourceRef_FileInFullpak ForeignC cSourcesSourcePath
-        pure defaultSource
-          { sourceName            = Just (cs qualifiedModuleName)
-          , sourceSourceReference = Just cSourcesSourceRef
-          , sourcePath            = Just (cs qualifiedModuleName)
-          }
-
-      False -> do
-        let
-          hsSourcePath    = cs (qualifiedModuleName </> "module.hs")
-          coreSourcePath  = cs (qualifiedModuleName </> "module.ghccore")
-          estgSourcePath  = cs (qualifiedModuleName </> "module.stgbin")
-          stgSourcePath   = cs (qualifiedModuleName </> "module.ghcstg")
-          cmmSourcePath   = cs (qualifiedModuleName </> "module.cmm")
-          asmSourcePath   = cs (qualifiedModuleName </> "module.s")
-          cStubSourcePath = cs (qualifiedModuleName </> "module_stub.c")
-          hStubSourcePath = cs (qualifiedModuleName </> "module_stub.h")
-
-        hsSourceRef     <- getSourceRef $ SourceRef_FileInFullpak Haskell  hsSourcePath
-        coreSourceRef   <- getSourceRef $ SourceRef_FileInFullpak GhcCore  coreSourcePath
-        estgSourceRef   <- getSourceRef $ SourceRef_FileInFullpak ExtStg   estgSourcePath
-        stgSourceRef    <- getSourceRef $ SourceRef_FileInFullpak GhcStg   stgSourcePath
-        cmmSourceRef    <- getSourceRef $ SourceRef_FileInFullpak Cmm      cmmSourcePath
-        asmSourceRef    <- getSourceRef $ SourceRef_FileInFullpak Asm      asmSourcePath
-        cStubSourceRef  <- getSourceRef $ SourceRef_FileInFullpak FFICStub cStubSourcePath
-        hStubSourceRef  <- getSourceRef $ SourceRef_FileInFullpak FFIHStub hStubSourcePath
-
-        let
-          hsSource =
-            defaultSource
-            { sourceName = Just (pathToName hsSourcePath)
-            , sourceSourceReference = Just hsSourceRef
-            , sourcePath = Just hsSourcePath
-            }
-          coreSource =
-            defaultSource
-            { sourceName = Just (pathToName coreSourcePath)
-            , sourceSourceReference = Just coreSourceRef
-            , sourcePath = Just coreSourcePath
-            }
-          stgSource =
-            defaultSource
-            { sourceName = Just (pathToName stgSourcePath)
-            , sourceSourceReference = Just stgSourceRef
-            , sourcePath = Just stgSourcePath
-            }
-          cStubSource =
-            defaultSource
-            { sourceName = Just (pathToName cStubSourcePath)
-            , sourceSourceReference = Just cStubSourceRef
-            , sourcePath = Just cStubSourcePath
-            }
-          hStubSource =
-            defaultSource
-            { sourceName = Just (pathToName hStubSourcePath)
-            , sourceSourceReference = Just hStubSourceRef
-            , sourcePath = Just hStubSourcePath
-            }
-          cmmSource =
-            defaultSource
-            { sourceName            = Just (pathToName cmmSourcePath)
-            , sourceSourceReference = Just cmmSourceRef
-            , sourcePath            = Just cmmSourcePath
-            }
-          asmSource =
-            defaultSource
-            { sourceName            = Just (pathToName asmSourcePath)
-            , sourceSourceReference = Just asmSourceRef
-            , sourcePath            = Just asmSourcePath
-            }
-          estgSource =
-            defaultSource
-            { sourceName = Just (pathToName estgSourcePath)
-            , sourceSourceReference = Just estgSourceRef
-            , sourcePath = Just (pathToName estgSourcePath)
-            , sourceSources = Just $
-                [ hsSource
-                , coreSource
-                , cmmSource
-                , asmSource
-                , stgSource
-                ] ++
-                [ cStubSource
-                | cStub
-                ] ++
-                [ hStubSource
-                | hStub
-                ]
-            }
-        pure estgSource
-    ESTG {..} <- getDebugSession
-    liftIO $ atomicModifyIORef' loadedSourcesRef (const (sourceList, ()))
-    pure sourceList
+    moduleInfos <- getsApp $ M.elems . moduleInfoMap
+    forM moduleInfos $ \ModuleInfo {..} -> case isCSource of
+      True  -> getSourceFromSourceRefDescriptor $ SourceRef_SourceFileInFullpak ForeignC qualifiedModuleName
+      False -> getSourceFromSourceRefDescriptor $ SourceRef_SourceFileInFullpak ExtStg   qualifiedModuleName
 
 ----------------------------------------------------------------------------
 talk CommandModules = do
@@ -554,19 +461,14 @@ talk cmd = logInfo $ BL8.pack ("GOT cmd " <> show cmd)
 
 getSourceAndPositionForStgPoint :: Id -> StgPoint -> Adaptor ESTG (Maybe Source, Int, Int, Int, Int)
 getSourceAndPositionForStgPoint (Id Binder{..}) stgPoint = do
-      ESTG {..} <- getDebugSession
-      loadedSources <- liftIO $ readIORef loadedSourcesRef
-      let srcName = cs $ getModuleName binderModule
-          source  = head $ filter (\s -> (dropExtension . cs <$> sourceName s) == Just srcName) loadedSources
-          -- TODO: use functional model: Id's module name -> source path -> source ref
-          -- TODO: remove IORef
-          Just sourceRef = sourceSourceReference source
-      (_sourceCodeText, locations) <- getSourceFromFullPak sourceRef
-      case filter ((== stgPoint) . fst) locations of
-        (_, ((line, column),(endLine, endColumn))) : _ -> do
-          pure (Just source, line, column, endLine, endColumn)
-        _ -> do
-          pure (Just source, 0, 0, 0, 0)
+  source <- getSourceFromSourceRefDescriptor $ SourceRef_SourceFileInFullpak ExtStg (cs $ getModuleName binderModule)
+  let Just sourceRef = sourceSourceReference source
+  (_sourceCodeText, locations) <- getSourceFromFullPak sourceRef
+  case filter ((== stgPoint) . fst) locations of
+    (_, ((line, column),(endLine, endColumn))) : _ -> do
+      pure (Just source, line, column, endLine, endColumn)
+    _ -> do
+      pure (Just source, 0, 0, 0, 0)
 
 ----------------------------------------------------------------------------
 
@@ -578,20 +480,19 @@ data ModuleInfo
     -- ^ If stubs.h is included in the .fullpak for this module
   , isCSource :: Bool
     -- ^ Is a C source file located in c-sources
-  , qualifiedModuleName :: String
+  , qualifiedModuleName :: Text
     -- ^ Fully qualified module name
   }
 ----------------------------------------------------------------------------
 -- | Retrieves list of modules from .fullpak file
 -- TODO: Check if stubs file exists, if so, return it.
-getModuleListFromFullPak :: Adaptor ESTG [ModuleInfo]
-getModuleListFromFullPak = do
-  ESTG {..} <- getDebugSession
+getModuleListFromFullPak :: FilePath -> IO [ModuleInfo]
+getModuleListFromFullPak fullPakPath = do
   let appName = "app.ghc_stgapp"
-  bytes <- liftIO (readModpakL fullPakPath appName id)
+  bytes <- readModpakL fullPakPath appName id
   rawEntries <- fmap unEntrySelector . M.keys <$> withArchive fullPakPath getEntries
   let folderNames = Set.fromList (takeDirectory <$> rawEntries)
-  GhcStgApp {..} <- liftIO (decodeThrow (BL8.toStrict bytes))
+  GhcStgApp {..} <- decodeThrow (BL8.toStrict bytes)
   let
     unitModules :: [String]
     unitModules = concat
@@ -612,7 +513,7 @@ getModuleListFromFullPak = do
     [ ModuleInfo
       { cStub = (moduleName </> "module_stub.c") `Set.member` rawEntriesSet
       , hStub = (moduleName </> "module_stub.h") `Set.member` rawEntriesSet
-      , qualifiedModuleName = moduleName
+      , qualifiedModuleName = cs moduleName
       , ..
       }
     | moduleName <- unitModules <> appModules <> cbitsSources
@@ -620,23 +521,35 @@ getModuleListFromFullPak = do
     , moduleName `Set.member` folderNames || isCSource
     ]
 
+getSourcePath :: QualifiedModuleName -> SourceLanguage -> FilePath
+getSourcePath qualifiedModuleName = \case
+  Haskell   -> cs qualifiedModuleName </> "module.hs"
+  GhcCore   -> cs qualifiedModuleName </> "module.ghccore"
+  GhcStg    -> cs qualifiedModuleName </> "module.ghcstg"
+  Cmm       -> cs qualifiedModuleName </> "module.cmm"
+  Asm       -> cs qualifiedModuleName </> "module.s"
+  ExtStg    -> cs qualifiedModuleName </> "module.stgbin"
+  FFICStub  -> cs qualifiedModuleName </> "module_stub.c"
+  FFIHStub  -> cs qualifiedModuleName </> "module_stub.h"
+  ForeignC  -> cs qualifiedModuleName
+
 ----------------------------------------------------------------------------
 -- | Retrieves list of modules from .fullpak file
 getSourceFromFullPak :: SourceId -> Adaptor ESTG (Text, [(StgPoint, SrcRange)])
 getSourceFromFullPak sourceId = do
   ESTG {..} <- getDebugSession
-  SourceRef_FileInFullpak srcLang sourcePath <- case Bimap.lookupR sourceId dapSourceRefMap of
+  SourceRef_SourceFileInFullpak srcLang qualifiedModuleName <- case Bimap.lookupR sourceId dapSourceRefMap of
     Nothing     -> do
       sendError (ErrorMessage (T.pack $ "Unknown sourceId: " ++ show sourceId)) Nothing
     Just value  -> pure value
-  --sourcePath <- T.unpack <$> getSourcePathBySourceReferenceId sourceId
+  let sourcePath = getSourcePath qualifiedModuleName srcLang
   liftIO $
     case srcLang of
       ExtStg -> do
-        m <- readModpakL fullPakPath (cs sourcePath) decodeStgbin
+        m <- readModpakL fullPakPath sourcePath decodeStgbin
         pure . pShow $ pprModule m
       _ -> do
-        ir <- readModpakS fullPakPath (cs sourcePath) T.decodeUtf8
+        ir <- readModpakS fullPakPath sourcePath T.decodeUtf8
         pure (ir, [])
 ----------------------------------------------------------------------------
 -- | Synchronous call to Debugger, sends message and waits for response
@@ -1102,8 +1015,41 @@ data SourceLanguage
   deriving (Show, Eq, Ord)
 
 data DapSourceRefDescriptor
-  = SourceRef_FileInFullpak SourceLanguage SourcePath
+  = SourceRef_SourceFileInFullpak SourceLanguage QualifiedModuleName
   deriving (Show, Eq, Ord)
+
+getSourceFromSourceRefDescriptor :: DapSourceRefDescriptor -> Adaptor ESTG Source
+getSourceFromSourceRefDescriptor sourceRefDesc@(SourceRef_SourceFileInFullpak sourceLanguage qualModName) = do
+  sourceRef <- getSourceRef sourceRefDesc
+  let sourcePath = cs $ getSourcePath qualModName sourceLanguage
+  sources <- if sourceLanguage /= ExtStg then pure Nothing else do
+    ModuleInfo{..} <- getsApp $ (M.! qualModName) . moduleInfoMap
+    hsSource    <- getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak Haskell  qualModName)
+    coreSource  <- getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak GhcCore  qualModName)
+    stgSource   <- getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak GhcStg   qualModName)
+    cmmSource   <- getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak Cmm      qualModName)
+    asmSource   <- getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak Asm      qualModName)
+    cStubSource <- getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak FFICStub qualModName)
+    hStubSource <- getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak FFIHStub qualModName)
+    pure . Just $
+      [ hsSource
+      , coreSource
+      , cmmSource
+      , asmSource
+      , stgSource
+      ] ++
+      [ cStubSource
+      | cStub
+      ] ++
+      [ hStubSource
+      | hStub
+      ]
+  pure defaultSource
+    { sourceName            = Just sourcePath
+    , sourceSourceReference = Just sourceRef
+    , sourcePath            = Just sourcePath
+    , sourceSources         = sources
+    }
 
 getFrameId :: DapFrameIdDescriptor -> Adaptor ESTG Int
 getFrameId key = do
@@ -1165,7 +1111,7 @@ getFreshBreakpointId = do
   pure bkpId
 
 
-type SourcePath = Text
+type QualifiedModuleName = Text
 type BreakpointId = Int
 type SourceId = Int
 type ThreadId = Int
