@@ -374,13 +374,13 @@ talk CommandStackTrace = do
 
       -- create the rest of frames from the Thread's stack frames
       stackFrames <- forM (zip [0..] tsStack) $ \(frameIndex, stackCont) -> case stackCont of
-        CaseOf _ _ _ scrutResultId _ _ -> do
+        CaseOf _ closureId _ scrutResultId _ _ -> do
           -- HINT: use the case scrutinee result's unique binder id to lookup source location info
           (source, line, column, endLine, endColumn) <- getSourceAndPositionForStgPoint scrutResultId (SP_CaseScrutineeExpr scrutResultId)
           frameId <- getFrameId $ FrameId_ThreadStackFrame stackTraceArgumentsThreadId frameIndex
           pure $ defaultStackFrame
             { stackFrameId        = frameId
-            , stackFrameName      = T.pack (showStackCont stackCont)
+            , stackFrameName      = cs $ "CaseOf " ++ show closureId
             , stackFrameSource    = source
             , stackFrameLine      = line
             , stackFrameColumn    = column
