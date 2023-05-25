@@ -42,6 +42,7 @@ executable dap-estg
     , mtl
     , yaml
     , zip
+    , bimap
   hs-source-dirs:
     exe
   default-language:
