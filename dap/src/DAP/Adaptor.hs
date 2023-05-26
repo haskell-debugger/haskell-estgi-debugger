@@ -48,22 +48,30 @@ module DAP.Adaptor
   -- * Internal use
   , send
   , sendRaw
+  -- * Internal function used to execute actions on behalf of the DAP server
+  -- from child threads (useful for handling asynchronous debugger events).
+  , runAdaptorWith
   ) where
 ----------------------------------------------------------------------------
 import           Control.Concurrent         ( ThreadId )
+import           Control.Concurrent.MVar    ( newMVar, newEmptyMVar, modifyMVar_
+                                            , takeMVar, putMVar, readMVar, MVar )
 import           Control.Concurrent.Lifted  ( fork, killThread )
 import qualified Control.Concurrent.MVar    as MVar
 import           Control.Exception          ( throwIO )
 import           Control.Concurrent.STM     ( atomically, readTVarIO, modifyTVar' )
 import           Control.Monad              ( when, unless )
-import           Control.Monad.Except       ( throwError )
-import           Control.Monad.State.Strict ( MonadIO(liftIO), gets, modify', put )
+import           Control.Monad.Except       ( runExceptT, throwError )
+import           Control.Monad.State        ( evalStateT, runStateT, execStateT, gets
+                                            , MonadIO(liftIO), gets, modify', put )
 import           Data.Aeson                 ( FromJSON, Result (..), fromJSON )
 import           Data.Maybe                 ( fromMaybe )
 import           Data.Aeson.Encode.Pretty   ( encodePretty )
 import           Data.Aeson.Types           ( object, Key, KeyValue((.=)), ToJSON )
 import qualified Data.IntMap.Strict         as I
 import           Data.IntMap.Strict         (IntMap)
+import qualified Data.IntSet                as IntSet
+import           Data.IntSet                (IntSet)
 import           Data.Text                  ( unpack, Text, pack )
 import           Network.Socket             ( SockAddr )
 import           System.IO                  ( Handle )
@@ -150,43 +158,46 @@ setDebugSessionId session = modify' $ \s -> s { sessionId = Just session }
 registerNewDebugSession
   :: SessionId
   -> app
-  -> Adaptor app ()
+  -> IO ()
   -- ^ Action to run debugger (operates in a forked thread that gets killed when disconnect is set)
-  -> Adaptor app ()
+  -> ((Adaptor app () -> IO ()) -> IO ())
   -- ^ Long running operation, meant to be used as a sink for
   -- the debugger to emit events and for the adaptor to forward to the editor
   -- This function should be in a 'forever' loop waiting on the read end of
   -- a debugger channel.
+  --
+  -- This event handler thread also takes an argument that allows any child thread to execute
+  -- events on behalf of the DAP server (in 'Adaptor app ()'). This function should always be
+  -- used when sending events to the editor from the debugger (or from any forked thread).
+  --
+  -- >
+  -- > registerNewDebugSession sessionId appState loadDebugger $ \withAdaptor ->
+  -- >   forever $ getDebuggerOutput >>= \output -> do
+  -- >     withAdaptor $ sendOutputEvent defaultOutputEvent { outputEventOutput = output }
+  -- >
+  --
   -> Adaptor app ()
 registerNewDebugSession k v debuggerExecution outputEventSink = do
   store <- gets appStore
-  lock1 <- liftIO $ MVar.newEmptyMVar
-  lock2 <- liftIO $ MVar.newEmptyMVar
-  let setupAndRun lock action = do
-        liftIO (MVar.takeMVar lock)
-        resetAdaptorStatePayload
-        action
-  setDebugSessionId k
-  debuggerThreadState <-
+  adaptorStateMVar <- gets adaptorStateMVar
+  debuggerThreadState <- liftIO $
     DebuggerThreadState
-      <$> fork (setupAndRun lock1 debuggerExecution)
-      <*> fork (setupAndRun lock2 outputEventSink)
-  liftIO $ do
-    atomically $ modifyTVar' store (H.insert k (debuggerThreadState, v))
-    MVar.putMVar lock1 ()
-    MVar.putMVar lock2 ()
+      <$> fork debuggerExecution
+      <*> fork (outputEventSink (runAdaptorWith adaptorStateMVar))
+  liftIO . atomically $ modifyTVar' store (H.insert k (debuggerThreadState, v))
+  setDebugSessionId k
   logInfo $ BL8.pack $ "Registered new debug session: " <> unpack k
-----------------------------------------------------------------------------
-getDebugSession :: Adaptor a a
-getDebugSession = do
-  (_, _, app) <- getDebugSessionWithThreadIdAndSessionId
-  pure app
 ----------------------------------------------------------------------------
 updateDebugSession :: (app -> app) -> Adaptor app ()
 updateDebugSession updateFun = do
   sessionId <- getDebugSessionId
   store <- gets appStore
   liftIO . atomically $ modifyTVar' store (H.adjust (fmap updateFun) sessionId)
+----------------------------------------------------------------------------
+getDebugSession :: Adaptor a a
+getDebugSession = do
+  (_, _, app) <- getDebugSessionWithThreadIdAndSessionId
+  pure app
 ----------------------------------------------------------------------------
 getDebugSessionWithThreadIdAndSessionId :: Adaptor app (SessionId, DebuggerThreadState, app)
 getDebugSessionWithThreadIdAndSessionId = do
@@ -396,3 +407,18 @@ getArguments = do
         x -> do
           logError (BL8.pack (show x))
           liftIO $ throwIO (ParseException (show x))
+
+----------------------------------------------------------------------------
+-- | Evaluates Adaptor action by using and updating the state in the MVar
+runAdaptorWith :: MVar (AdaptorState app) -> Adaptor app () -> IO ()
+runAdaptorWith adaptorStateMVar action = do
+  modifyMVar_ adaptorStateMVar (flip runAdaptor (resetAdaptorStatePayload >> action))
+
+----------------------------------------------------------------------------
+-- | Utility for evaluating a monad transformer stack
+runAdaptor :: AdaptorState app -> Adaptor app () -> IO (AdaptorState app)
+runAdaptor adaptorState (Adaptor client) =
+  runStateT (runExceptT client) adaptorState >>= \case
+    (Left (errorMessage, maybeMessage), nextState) ->
+      runAdaptor nextState (sendErrorResponse errorMessage maybeMessage)
+    (Right (), nextState) -> pure nextState

@@ -16,25 +16,23 @@ export function activate(context: vscode.ExtensionContext) {
 //    vscode.debug.onDidReceiveDebugSessionCustomEvent
 	// Use the console to output diagnostic information (console.log) and errors (console.error)
 	// This line of code will only be executed once when your extension is activated
-	console.log('Congratulations, your extension "external-stg-debugger" is now active!');
 
 	// The command has been defined in the package.json file
 	// Now provide the implementation of the command with registerCommand
 	// The commandId parameter must match the command field in package.json
-	let disposable = vscode.commands.registerCommand('external-stg-debugger.helloWorld', () => {
 		// The code you place here will be executed every time your command is executed
 		// Display a message box to the user
-		vscode.window.showInformationMessage('Hello World from external-stg-debugger!');
-	});
-    console.log('foo');
+	context.subscriptions.push(vscode.commands.registerCommand('dap-extension.garbageCollect', () => {
+		// The code you place here will be executed every time your command is executed
+		// Display a message box to the user
+		vscode.debug.activeDebugSession?.customRequest('garbageCollect');
+                window.showInformationMessage('Running garbage collection...');
+	}));
 
 	runDebugger (context, new MockDebugAdapterServerDescriptorFactory());
-
-	context.subscriptions.push(disposable);
 }
 
 export function runDebugger (context: vscode.ExtensionContext, factory: MockDebugAdapterServerDescriptorFactory) {
-
 	context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory('dap-extension', factory));
 	console.log('made it to runDebugger');
 

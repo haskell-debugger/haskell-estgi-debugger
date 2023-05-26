@@ -27,7 +27,8 @@ import           Control.Concurrent.Async
 import           Control.Concurrent
 import           Control.Exception
 import qualified Data.ByteString.Lazy.Char8 as BL8 ( hPutStrLn )
-import           Network.Socket
+import           Network.Simple.TCP         hiding (send)
+import           Network.Socket             (socketToHandle)
 import           System.IO
 import           Data.String.Conversions
 import           Test.Hspec
@@ -122,6 +123,11 @@ mockServerTalk CommandConfigurationDone = do
 testPort :: Int
 testPort = 8001
 
+-- | Sample host shared amongst client and server
+--
+testHost :: String
+testHost = "localhost"
+
 -- | Runs server in a thread, 'withAsync' ensures cleanup.
 --
 withServer :: IO () -> IO ()
@@ -129,7 +135,7 @@ withServer test = withAsync server (const test)
   where
     server = runDAPServer config mockServerTalk
     config = ServerConfig
-      { host = "localhost"
+      { host = testHost
       , port = testPort
       , serverCapabilities = defaultCapabilities
       , debugLogging = False
@@ -138,26 +144,17 @@ withServer test = withAsync server (const test)
 -- | Spawns a new mock client that connects to the mock server.
 --
 withNewClient :: (Handle -> IO ()) -> IO ()
-withNewClient continue = withSocketsDo $ do
-  [info] <- getAddrInfo (Just addrInfo) Nothing (Just (show testPort))
-  socket <- openSocket info
-  connect socket (addrAddress info) `catch` exceptionHandler
-  handle <- socketToHandle socket ReadWriteMode
-  hSetNewlineMode handle NewlineMode { inputNL = CRLF, outputNL = CRLF }
-  continue handle `finally` hClose handle
-    where
-      exceptionHandler :: SomeException -> IO ()
-      exceptionHandler _ = do
-        threadDelay 100
-        putStrLn "Retrying connection..."
-        withNewClient continue
-
-      addrInfo :: AddrInfo
-      addrInfo
-        = defaultHints
-        { addrSocketType = Stream
-        , addrFamily = AF_INET
-        }
+withNewClient continue = flip catch exceptionHandler $
+  connect testHost (show testPort) $ \(socket, _) -> do
+    handle <- socketToHandle socket ReadWriteMode
+    hSetNewlineMode handle NewlineMode { inputNL = CRLF, outputNL = CRLF }
+    continue handle `finally` hClose handle
+      where
+        exceptionHandler :: SomeException -> IO ()
+        exceptionHandler _ = do
+          threadDelay 100
+          putStrLn "Retrying connection..."
+          withNewClient continue
 
 -- | Helper to send JSON payloads to the server
 --

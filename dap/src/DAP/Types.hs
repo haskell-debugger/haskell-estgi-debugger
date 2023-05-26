@@ -286,6 +286,9 @@ data AdaptorState app
     -- ^ Session ID
     -- Local to the current connection's debugger session
     --
+  , adaptorStateMVar    :: MVar (AdaptorState app)
+    -- ^ Shared state for serializable concurrency
+    --
   , handleLock          :: MVar ()
     -- ^ A lock for writing to a Handle. One lock is created per connection
     -- and exists for the duration of that connection
@@ -935,7 +938,7 @@ data Command
   | CommandReadMemory
   | CommandWriteMemory
   | CommandDisassemble
-  | CommandUnknown Text
+  | CustomCommand Text
   deriving stock (Show, Eq, Read, Generic)
 ----------------------------------------------------------------------------
 instance FromJSON Command where
@@ -944,12 +947,12 @@ instance FromJSON Command where
       Just cmd ->
         pure cmd
       Nothing ->
-        pure (CommandUnknown command)
+        pure (CustomCommand command)
     where
       name = show (typeRep (Proxy @Command))
 ----------------------------------------------------------------------------
 instance ToJSON Command where
-  toJSON (CommandUnknown x) = toJSON x
+  toJSON (CustomCommand x) = toJSON x
   toJSON cmd = genericToJSONWithModifier cmd
 ----------------------------------------------------------------------------
 data ErrorMessage

@@ -33,6 +33,7 @@ import           Data.IORef
 import           Control.Exception                     hiding (catch)
 import           Control.Monad.IO.Class                (liftIO)
 import           Control.Exception.Lifted              (catch)
+import           Control.Monad.State.Strict            ( gets )
 import           Control.Monad
 import           Control.Monad.State.Strict            ( gets )
 import           Data.Aeson                            ( Value(Null), FromJSON )
@@ -54,6 +55,7 @@ import           System.FilePath                       ((</>), takeDirectory, ta
 import           Text.Read                             ( readMaybe )
 import qualified Data.ByteString.Lazy.Char8            as BL8 ( pack, unpack, fromStrict, toStrict )
 import qualified Control.Concurrent.Chan.Unagi.Bounded as Unagi
+import           Control.Concurrent.MVar               ( MVar )
 import qualified Control.Concurrent.MVar               as MVar
 ----------------------------------------------------------------------------
 import           Stg.Syntax                            hiding (sourceName, Scope)
@@ -117,7 +119,7 @@ data ESTG
   { debuggerChan      :: DebuggerChan
   , fullPakPath       :: String
   , moduleInfoMap     :: Map Text ModuleInfo
-  , breakpointMapRef  :: IORef (Map Stg.Breakpoint IntSet)
+  , breakpointMap     :: Map Stg.Breakpoint IntSet
 
   -- application specific resource handling
 
@@ -146,7 +148,6 @@ initESTG AttachArgs {..} = do
   (dbgAsyncI, dbgAsyncO) <- liftIO (Unagi.newChan 100)
   dbgRequestMVar <- liftIO MVar.newEmptyMVar
   dbgResponseMVar <- liftIO MVar.newEmptyMVar
-  breakpointMapRef <- liftIO $ newIORef mempty
   let dbgChan = DebuggerChan
         { dbgSyncRequest    = dbgRequestMVar
         , dbgSyncResponse   = dbgResponseMVar
@@ -157,7 +158,7 @@ initESTG AttachArgs {..} = do
         { debuggerChan          = dbgChan
         , fullPakPath           = program
         , moduleInfoMap         = M.fromList [(cs $ qualifiedModuleName mi, mi) | mi <- moduleInfos]
-        , breakpointMapRef      = breakpointMapRef
+        , breakpointMap         = mempty
         , dapSourceRefMap       = Bimap.empty
         , dapFrameIdMap         = Bimap.empty
         , dapVariablesRefMap    = Bimap.empty
@@ -166,35 +167,38 @@ initESTG AttachArgs {..} = do
         }
   flip catch handleDebuggerExceptions
     $ registerNewDebugSession __sessionId estg
-      (liftIO $ loadAndRunProgram True True program [] dbgChan DbgStepByStep False defaultDebugSettings)
+      (loadAndRunProgram True True program [] dbgChan DbgStepByStep False defaultDebugSettings)
       (handleDebugEvents dbgChan)
+
 ----------------------------------------------------------------------------
 -- | Debug Event Handler
-handleDebugEvents :: DebuggerChan -> Adaptor ESTG ()
-handleDebugEvents DebuggerChan{..} = forever $ do
+handleDebugEvents :: DebuggerChan -> (Adaptor ESTG () -> IO ()) -> IO ()
+handleDebugEvents DebuggerChan{..} withAdaptor = forever $ do
   dbgEvent <- liftIO (Unagi.readChan dbgAsyncEventOut)
-  ESTG {..} <- getDebugSession
-  let sendEvent ev = sendSuccesfulEvent ev . setBody
-  case dbgEvent of
-    DbgEventStopped -> do
-      StgState{..} <- getStgState
-      sendEvent EventTypeStopped $ object
-        [ "reason"             .= String "step"
-        , "allThreadsStopped"  .= True
-        , "threadId"           .= Number (fromIntegral ssCurrentThreadId)
-        ]
+  withAdaptor $ do
+    ESTG {..} <- getDebugSession
+    let sendEvent ev = sendSuccesfulEvent ev . setBody
+    case dbgEvent of
+      DbgEventStopped -> do
+        resetObjectLifetimes
+        StgState{..} <- getStgState
+        sendEvent EventTypeStopped $ object
+          [ "reason"             .= String "step"
+          , "allThreadsStopped"  .= True
+          , "threadId"           .= Number (fromIntegral ssCurrentThreadId)
+          ]
 
-    DbgEventHitBreakpoint bkpName -> do
-      StgState{..} <- getStgState
-      breakpointMap <- liftIO $ readIORef breakpointMapRef
-      sendEvent EventTypeStopped . object $
-        [ "reason"             .= String "breakpoint"
-        , "allThreadsStopped"  .= True
-        , "threadId"           .= Number (fromIntegral ssCurrentThreadId)
-        ] ++
-        [ "hitBreakpointIds" .= idSet
-        | Just idSet <- pure $ M.lookup bkpName breakpointMap
-        ]
+      DbgEventHitBreakpoint bkpName -> do
+        resetObjectLifetimes
+        StgState{..} <- getStgState
+        sendEvent EventTypeStopped . object $
+          [ "reason"             .= String "breakpoint"
+          , "allThreadsStopped"  .= True
+          , "threadId"           .= Number (fromIntegral ssCurrentThreadId)
+          ] ++
+          [ "hitBreakpointIds" .= idSet
+          | Just idSet <- pure $ M.lookup bkpName breakpointMap
+          ]
 
 ----------------------------------------------------------------------------
 -- | Exception Handler
@@ -220,16 +224,14 @@ pathToName path =
 -- | Clears the currently known breakpoint set
 clearBreakpoints :: Adaptor ESTG ()
 clearBreakpoints = do
-  ESTG {..} <- getDebugSession
-  liftIO $ atomicWriteIORef breakpointMapRef mempty
+  updateDebugSession $ \estg -> estg {breakpointMap = mempty}
 
 ----------------------------------------------------------------------------
 -- | Adds new BreakpointId for a givent StgPoint
 addNewBreakpoint :: Stg.Breakpoint -> Adaptor ESTG BreakpointId
 addNewBreakpoint breakpoint = do
-  ESTG {..} <- getDebugSession
   bkpId <- getFreshBreakpointId
-  liftIO $ atomicModifyIORef' breakpointMapRef $ \m -> (M.insertWith mappend breakpoint (IntSet.singleton bkpId) m, ())
+  updateDebugSession $ \estg@ESTG{..} -> estg {breakpointMap = M.insertWith mappend breakpoint (IntSet.singleton bkpId) breakpointMap}
   pure bkpId
 
 ----------------------------------------------------------------------------
@@ -246,6 +248,11 @@ talk CommandAttach = do
     where
       emitEvent :: DebugOutput -> Adaptor ESTG ()
       emitEvent cmd = logInfo $ BL8.pack (show cmd)
+----------------------------------------------------------------------------
+talk (CustomCommand "garbageCollect") = do
+  logInfo "Running garbage collection..."
+  sendAndWait (CmdInternal "gc")
+  sendSuccesfulEmptyResponse
 ----------------------------------------------------------------------------
 talk CommandContinue = do
   ESTG {..} <- getDebugSession
