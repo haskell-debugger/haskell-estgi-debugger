@@ -276,7 +276,9 @@ talk CommandLoadedSources = do
 talk CommandModules = do
   sendModulesResponse (ModulesResponse [] Nothing)
 ----------------------------------------------------------------------------
-talk CommandPause = sendPauseResponse
+talk CommandPause = do
+  sendAndWait CmdStop
+  sendPauseResponse
 ----------------------------------------------------------------------------
 talk CommandSetBreakpoints = do
   SetBreakpointsArguments {..} <- getArguments
@@ -464,7 +466,7 @@ talk CommandVariables = do
 talk CommandNext = do
   NextArguments {..} <- getArguments
   sendAndWait CmdStep
-  pure ()
+  sendNextResponse
 ----------------------------------------------------------------------------
 talk CommandBreakpointLocations       = sendBreakpointLocationsResponse []
 talk CommandSetDataBreakpoints        = sendSetDataBreakpointsResponse []
