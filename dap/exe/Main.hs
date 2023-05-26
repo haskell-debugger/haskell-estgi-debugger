@@ -112,7 +112,6 @@ data AttachArgs
     deriving anyclass FromJSON
 ----------------------------------------------------------------------------
 -- | External STG Interpreter application internal state
---type VariableReferences = IntMap (IntMap (IntMap Variable))
 data ESTG
   = ESTG
   { debuggerChan      :: DebuggerChan
@@ -281,7 +280,11 @@ talk CommandPause = sendPauseResponse
 ----------------------------------------------------------------------------
 talk CommandSetBreakpoints = do
   SetBreakpointsArguments {..} <- getArguments
-  let maybeSourceRef = sourceSourceReference setBreakpointsArgumentsSource
+  maybeSourceRef <- getValidSourceRefFromSource setBreakpointsArgumentsSource
+
+  -- the input SourceRef might be a remain of a previous DAP session, update it wit the new valid one
+  let refUpdatedSource = setBreakpointsArgumentsSource { sourceSourceReference = maybeSourceRef }
+
   clearBreakpoints
   case (setBreakpointsArgumentsBreakpoints, maybeSourceRef) of
     (Just sourceBreakpoints, Just sourceRef) -> do
@@ -318,7 +321,7 @@ talk CommandSetBreakpoints = do
             bkpId <- addNewBreakpoint $ BkpStgPoint stgPoint
             pure $ defaultBreakpoint
               { breakpointVerified  = True
-              , breakpointSource    = Just setBreakpointsArgumentsSource
+              , breakpointSource    = Just refUpdatedSource
               , breakpointLine      = Just startRow
               , breakpointColumn    = Just startCol
               , breakpointEndLine   = Just endRow
@@ -328,7 +331,7 @@ talk CommandSetBreakpoints = do
           _ ->
             pure $ defaultBreakpoint
               { breakpointVerified  = False
-              , breakpointSource    = Just setBreakpointsArgumentsSource
+              , breakpointSource    = Just refUpdatedSource
               , breakpointMessage   = Just "no code found"
               }
       sendSetBreakpointsResponse breakpoints
@@ -406,7 +409,16 @@ talk CommandStackTrace = do
 ----------------------------------------------------------------------------
 talk CommandSource = do
   SourceArguments {..} <- getArguments -- save path of fullpak in state
-  (source, _locations) <- getSourceFromFullPak sourceArgumentsSourceReference
+  {-
+    primary:    sourceArgumentsSource
+    secondary:  sourceArgumentsSourceReference
+  -}
+  sourceRef <- fromMaybe sourceArgumentsSourceReference <$>
+    case sourceArgumentsSource of
+      Just source -> getValidSourceRefFromSource source
+      Nothing     -> pure Nothing
+
+  (source, _locations) <- getSourceFromFullPak sourceRef
   sendSourceResponse (SourceResponse source Nothing)
 ----------------------------------------------------------------------------
 talk CommandThreads = do
@@ -430,13 +442,18 @@ talk CommandScopes = do
     Nothing -> do
       sendError (ErrorMessage (T.pack $ "Unknown frameId: " ++ show scopesArgumentsFrameId)) Nothing
 
-    Just FrameId_CurrentThreadTopStackFrame -> do
-      sendScopesResponse (ScopesResponse []) -- TODO
+    Just frameIdDescriptor@FrameId_CurrentThreadTopStackFrame
+      | Just currentClosureId <- ssCurrentClosure
+      -> do
+        scopes <- generateScopesForTopStackFrame frameIdDescriptor currentClosureId ssCurrentClosureEnv
+        sendScopesResponse (ScopesResponse scopes)
 
     Just frameIdDescriptor@(FrameId_ThreadStackFrame threadId frameIndex) -> do
       let stackFrame = (tsStack $ ssThreads IntMap.! threadId) !! frameIndex
       scopes <- generateScopes frameIdDescriptor stackFrame
       sendScopesResponse (ScopesResponse scopes)
+
+    _ -> sendScopesResponse (ScopesResponse [])
 
 ----------------------------------------------------------------------------
 talk CommandVariables = do
@@ -521,17 +538,22 @@ getModuleListFromFullPak fullPakPath = do
     , moduleName `Set.member` folderNames || isCSource
     ]
 
-getSourcePath :: QualifiedModuleName -> SourceLanguage -> FilePath
-getSourcePath qualifiedModuleName = \case
-  Haskell   -> cs qualifiedModuleName </> "module.hs"
-  GhcCore   -> cs qualifiedModuleName </> "module.ghccore"
-  GhcStg    -> cs qualifiedModuleName </> "module.ghcstg"
-  Cmm       -> cs qualifiedModuleName </> "module.cmm"
-  Asm       -> cs qualifiedModuleName </> "module.s"
-  ExtStg    -> cs qualifiedModuleName </> "module.stgbin"
-  FFICStub  -> cs qualifiedModuleName </> "module_stub.c"
-  FFIHStub  -> cs qualifiedModuleName </> "module_stub.h"
-  ForeignC  -> cs qualifiedModuleName
+getValidSourceRefFromSource :: Source -> Adaptor ESTG (Maybe Int)
+getValidSourceRefFromSource Source{..} = do
+  ESTG {..} <- getDebugSession
+  {-
+    fallback chain:
+      read sourceAdapterData if fullpak path matches to create SourceRef
+      use sourceSourceReference
+  -}
+  let maybeSrcDesc = do
+        String fingerprint <- sourceAdapterData
+        (srcFullpakPath, srcDesc) <- readMaybe (cs fingerprint)
+        guard (srcFullpakPath == fullPakPath)
+        pure srcDesc
+  case maybeSrcDesc of
+    Just srcDesc  -> Just <$> getSourceRef srcDesc
+    Nothing       -> pure sourceSourceReference
 
 ----------------------------------------------------------------------------
 -- | Retrieves list of modules from .fullpak file
@@ -579,6 +601,38 @@ getStgState = do
 mkThreadLabel :: ThreadState -> String
 mkThreadLabel = maybe "<unknown>" (BL8.unpack . BL8.fromStrict) . tsLabel
 
+generateScopesForTopStackFrame
+  :: DapFrameIdDescriptor
+  -> Id
+  -> Env
+  -> Adaptor ESTG [Scope]
+generateScopesForTopStackFrame frameIdDesc closureId env = do
+  (source, line, column, endLine, endColumn) <- getSourceAndPositionForStgPoint closureId (SP_RhsClosureExpr closureId)
+  scopeVarablesRef <- getVariablesRef $ VariablesRef_StackFrameVariables frameIdDesc
+  setVariables scopeVarablesRef
+    [ defaultVariable
+      { variableName  = cs binderName <> (if binderScope == ModulePublic then "" else cs ('_' : show u))
+      , variableValue = cs variableValue
+      , variableType  = Just (cs variableType)
+      }
+    | (Id (Binder{..}), (_, atom)) <- M.toList env
+    , let (variableType, variableValue) = getAtomTypeAndValue atom
+          BinderId u = binderId
+    ]
+  pure
+    [ defaultScope
+      { scopeName = "Locals"
+      , scopePresentationHint = Just ScopePresentationHintLocals
+      , scopeVariablesReference = scopeVarablesRef
+      , scopeNamedVariables = Just (M.size env)
+      , scopeSource = source
+      , scopeLine = Just line
+      , scopeColumn = Just column
+      , scopeEndLine = Just endLine
+      , scopeEndColumn = Just endColumn
+      }
+    ]
+
 ----------------------------------------------------------------------------
 generateScopes
   :: DapFrameIdDescriptor
@@ -593,12 +647,13 @@ generateScopes frameIdDesc stackCont@(CaseOf _ closureId env _ _ _) = do
     -- DMJ: for now everything is local.
     -- Inspect StaticOrigin to put things top-level, or as arguments, where applicable
     [ defaultVariable
-      { variableName  = cs binderName
+      { variableName  = cs binderName <> (if binderScope == ModulePublic then "" else cs ('_' : show u))
       , variableValue = cs variableValue
       , variableType  = Just (cs variableType)
       }
     | (Id (Binder{..}), (_, atom)) <- M.toList env
     , let (variableType, variableValue) = getAtomTypeAndValue atom
+          BinderId u = binderId
     ]
   pure
     [ defaultScope
@@ -1012,16 +1067,38 @@ data SourceLanguage
   | FFICStub
   | FFIHStub
   | ForeignC
-  deriving (Show, Eq, Ord)
+  deriving (Show, Read, Eq, Ord)
 
 data DapSourceRefDescriptor
   = SourceRef_SourceFileInFullpak SourceLanguage QualifiedModuleName
-  deriving (Show, Eq, Ord)
+  deriving (Show, Read, Eq, Ord)
+
+getSourcePath :: QualifiedModuleName -> SourceLanguage -> FilePath
+getSourcePath qualifiedModuleName = \case
+  Haskell   -> cs qualifiedModuleName </> "module.hs"
+  GhcCore   -> cs qualifiedModuleName </> "module.ghccore"
+  GhcStg    -> cs qualifiedModuleName </> "module.ghcstg"
+  Cmm       -> cs qualifiedModuleName </> "module.cmm"
+  Asm       -> cs qualifiedModuleName </> "module.s"
+  ExtStg    -> cs qualifiedModuleName </> "module.stgbin"
+  FFICStub  -> cs qualifiedModuleName </> "module_stub.c"
+  FFIHStub  -> cs qualifiedModuleName </> "module_stub.h"
+  ForeignC  -> cs qualifiedModuleName
+
+getSourceName :: QualifiedModuleName -> SourceLanguage -> String
+getSourceName qualifiedModuleName = \case
+  Haskell   -> cs qualifiedModuleName <> ".hs"
+  GhcCore   -> cs qualifiedModuleName <> ".ghccore"
+  GhcStg    -> cs qualifiedModuleName <> ".ghcstg"
+  Cmm       -> cs qualifiedModuleName <> ".cmm"
+  Asm       -> cs qualifiedModuleName <> ".s"
+  ExtStg    -> cs qualifiedModuleName <> ".stgbin"
+  FFICStub  -> cs qualifiedModuleName <> "_stub.c"
+  FFIHStub  -> cs qualifiedModuleName <> "_stub.h"
+  ForeignC  -> cs qualifiedModuleName
 
 getSourceFromSourceRefDescriptor :: DapSourceRefDescriptor -> Adaptor ESTG Source
 getSourceFromSourceRefDescriptor sourceRefDesc@(SourceRef_SourceFileInFullpak sourceLanguage qualModName) = do
-  sourceRef <- getSourceRef sourceRefDesc
-  let sourcePath = cs $ getSourcePath qualModName sourceLanguage
   sources <- if sourceLanguage /= ExtStg then pure Nothing else do
     ModuleInfo{..} <- getsApp $ (M.! qualModName) . moduleInfoMap
     hsSource    <- getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak Haskell  qualModName)
@@ -1044,11 +1121,20 @@ getSourceFromSourceRefDescriptor sourceRefDesc@(SourceRef_SourceFileInFullpak so
       [ hStubSource
       | hStub
       ]
+  let --sourcePath = cs $ getSourcePath qualModName sourceLanguage
+      sourceName = cs $ getSourceName qualModName sourceLanguage
+  sourceRef <- getSourceRef sourceRefDesc
+  ESTG {..} <- getDebugSession
   pure defaultSource
-    { sourceName            = Just sourcePath
+    { sourceName            = Just $ sourceName -- used in source tree children
     , sourceSourceReference = Just sourceRef
-    , sourcePath            = Just sourcePath
+    , sourcePath            = Just $ sourceName -- used in code tab title
     , sourceSources         = sources
+      {-
+        use fingerprint to identify sources between debug sessions
+        this allows to set pre-existing breakpoints coming from client (e.g. VSCode)
+      -}
+    , sourceAdapterData     = Just . String . cs $ show (fullPakPath, sourceRefDesc)
     }
 
 getFrameId :: DapFrameIdDescriptor -> Adaptor ESTG Int
@@ -1109,7 +1195,6 @@ getFreshBreakpointId = do
   bkpId <- getsApp nextFreshBreakpointId
   modifyApp $ \s -> s { nextFreshBreakpointId = nextFreshBreakpointId s + 1 }
   pure bkpId
-
 
 type QualifiedModuleName = Text
 type BreakpointId = Int
