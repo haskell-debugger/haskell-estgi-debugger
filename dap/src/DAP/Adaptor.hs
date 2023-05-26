@@ -45,31 +45,6 @@ module DAP.Adaptor
   , logInfo
   , logger
   , debugMessage
-  -- * Object lifetime reset
-  , resetObjectLifetimes
-  -- * Variable reference handling API
-  , addVariable
-  , getVariables
-  , getAllVars
-  , getVariableReferencesMap
-  -- * Frame handling
-  , setCurrentFrameId
-  , getCurrentFrameId
-  -- * Scope handling
-  , setCurrentScopeId
-  , getCurrentScopeId
-  , getNextScopeId
-  , resetNextScopeId
-  -- * Variable handling
-  , setCurrentVariableId
-  , getCurrentVariableId
-  , getNextVariableId
-  -- * Breakpoint handling
-  , getNextBreakpointId
-  -- * Source handling
-  , getNextSourceReferenceId
-  , getSourcePathBySourceReferenceId
-  , addSourcePathBySourceReferenceId
   -- * Internal use
   , send
   , sendRaw
@@ -82,6 +57,7 @@ import           Control.Concurrent         ( ThreadId )
 import           Control.Concurrent.MVar    ( newMVar, newEmptyMVar, modifyMVar_
                                             , takeMVar, putMVar, readMVar, MVar )
 import           Control.Concurrent.Lifted  ( fork, killThread )
+import qualified Control.Concurrent.MVar    as MVar
 import           Control.Exception          ( throwIO )
 import           Control.Concurrent.STM     ( atomically, readTVarIO, modifyTVar' )
 import           Control.Monad              ( when, unless )
@@ -431,126 +407,6 @@ getArguments = do
         x -> do
           logError (BL8.pack (show x))
           liftIO $ throwIO (ParseException (show x))
-
-resetNextScopeId :: Adaptor app ()
-resetNextScopeId = modify' $ \s -> s { currentScopeId = 0 }
-----------------------------------------------------------------------------
--- | Note: this `Int` should act as if it were an unsigned 31-bit integer (0, 2^31).
-resetVariableId :: Adaptor app ()
-resetVariableId = modify' $ \s -> s { currentVariableId = 0 }
-
-addVariable :: ScopeId -> Variable -> Adaptor app ()
-addVariable scopeId var = do
-  frameId <- getCurrentFrameId
-  varId <- getNextVariableId
-  let
-    val = I.singleton frameId (I.singleton scopeId (I.singleton varId var))
-    combine = I.unionWith (I.unionWith (<>))
-  modify' $ \s -> s { variablesMap = variablesMap s `combine` val }
-
-getVariables :: Adaptor app [Variable]
-getVariables = do
-  frameId <- getCurrentFrameId
-  scopeId <- getCurrentScopeId
-  varMap <- gets variablesMap
-  pure $ fromMaybe [] $ do
-    scopeMap <- I.lookup frameId varMap
-    varMap' <- I.lookup scopeId scopeMap
-    pure (I.elems varMap')
-
-getVariableReferencesMap :: Adaptor app VariableReferences
-getVariableReferencesMap = gets variablesMap
-
-getAllVars :: Adaptor app [Variable]
-getAllVars = do
-  varMap <- gets variablesMap
-  pure (I.elems =<< I.elems =<< I.elems varMap)
-
--- | Invoked when a StepEvent has occurred
-resetObjectLifetimes :: Adaptor app ()
-resetObjectLifetimes = do
-  modify' $ \s -> s
-    { variablesMap = mempty
-    , currentFrameId = 0
-    , currentScopeId = 0
-    , currentVariableId = 0
-    }
-
--- | Sets the current StackFrame ID.
--- Each new StackFrame resets the Scope ID counter.
-setCurrentFrameId :: FrameId -> Adaptor app ()
-setCurrentFrameId frameId = modify' $ \s ->
-  s { currentFrameId = frameId
-    , currentScopeId = 0
-    }
-
-getCurrentFrameId :: Adaptor app FrameId
-getCurrentFrameId = gets currentFrameId
-
--- | If a new scope is being set we reset the frameId
-setCurrentScopeId :: ScopeId -> Adaptor app ()
-setCurrentScopeId scopeId = modify' $ \s ->
-  s { currentScopeId = scopeId
-    , currentVariableId = 0
-    }
-
-----------------------------------------------------------------------------
--- | Note: this `Int` should act as if it were an unsigned 31-bit integer (0, 2^31).
--- Whenever we are incrementing the scope ID it is always in the context
--- of populating the scopes for a current stack frame.
---
--- Each new Scope resets the variable ID counter.
---
-getNextScopeId :: Adaptor app Int
-getNextScopeId = do
-  modify' $ \s -> s
-    { currentScopeId = currentScopeId s + 1
-    , currentVariableId = 0
-    }
-  gets currentScopeId
-
-getCurrentScopeId :: Adaptor app ScopeId
-getCurrentScopeId = gets currentScopeId
-
-setCurrentVariableId :: VariableId -> Adaptor app ()
-setCurrentVariableId variableId = modify' $ \s -> s { currentVariableId = variableId }
-
-getCurrentVariableId :: Adaptor app VariableId
-getCurrentVariableId = gets currentVariableId
-
-getNextVariableId :: Adaptor app VariableId
-getNextVariableId = do
-  modify' $ \s -> s { currentVariableId = currentVariableId s + 1 }
-  gets currentVariableId
-
-getNextBreakpointId :: Adaptor app BreakpointId
-getNextBreakpointId = do
-  modify' $ \s -> s { currentBreakpointId = currentBreakpointId s + 1 }
-  gets currentBreakpointId
-
-getNextSourceReferenceId :: Adaptor app SourceId
-getNextSourceReferenceId = do
-  modify' $ \s -> s { currentSourceReferenceId = currentSourceReferenceId s + 1 }
-  gets currentSourceReferenceId
-
-setSourceReferenceId :: Adaptor app SourceId
-setSourceReferenceId = do
-  modify' $ \s -> s { currentSourceReferenceId = currentSourceReferenceId s + 1 }
-  gets currentSourceReferenceId
-
--- | DMJ: TODO: don't use (I.!)
-getSourcePathBySourceReferenceId :: SourceId -> Adaptor app SourcePath
-getSourcePathBySourceReferenceId sourceId =
-  (I.! sourceId) <$> gets sourceReferencesMap
-
-addSourcePathBySourceReferenceId
-  :: SourcePath
-  -> SourceId
-  -> Adaptor app ()
-addSourcePathBySourceReferenceId path sourceId =
-  modify' $ \s -> s
-    { sourceReferencesMap = I.insert sourceId path (sourceReferencesMap s)
-    }
 
 ----------------------------------------------------------------------------
 -- | Evaluates Adaptor action by using and updating the state in the MVar

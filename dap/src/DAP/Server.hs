@@ -85,14 +85,7 @@ initAdaptorState
   -> IO (MVar (AdaptorState app))
 initAdaptorState handle address appStore serverConfig request = do
   handleLock               <- newMVar ()
-  variablesMap             <- pure mempty
-  sourceReferencesMap      <- pure mempty
   sessionId                <- pure Nothing
-  currentFrameId           <- pure 0
-  currentScopeId           <- pure 0
-  currentVariableId        <- pure 0
-  currentSourceReferenceId <- pure 0
-  currentBreakpointId      <- pure 0
   adaptorStateMVar         <- newEmptyMVar
   putMVar adaptorStateMVar AdaptorState
     { messageType = MessageTypeResponse

@@ -198,16 +198,6 @@ module DAP.Types
     -- * Log level
   , Level (..)
   , DebugStatus (..)
-    -- * Variables
-  , VariableReferences (..)
-    -- * Object Lifetime Types
-  , BreakpointId
-  , VariableId
-  , FrameId
-  , ScopeId
-  -- * Loaded Sources Path
-  , SourcePath
-  , SourceId
   -- * Debug Thread state
   , DebuggerThreadState (..)
   ) where
@@ -303,40 +293,10 @@ data AdaptorState app
     -- ^ A lock for writing to a Handle. One lock is created per connection
     -- and exists for the duration of that connection
     --
-  , variablesMap        :: !VariableReferences
-    -- ^ Used in the protocol to implement 'Object lifetimes and references'
-    -- The lifetime of this map is limited to the time between Stopped and Continued events.
-    -- It will get reset every time the debugger stops execution.
-    --
-  , currentVariableId  :: !Int
-    -- ^ Monotonically increasing integer for scopes + variables.
-    -- Local to the current "Stopped" session.
-    -- Limited to size 2^31
-    --
-  , currentFrameId     :: !Int
-    -- ^ The current FrameID
-    --
-  , currentScopeId     :: !Int
-    -- ^ The current ScopeID
-    --
-  , currentSourceReferenceId :: !Int
-    -- ^ Current source reference ID
-    --
-  , sourceReferencesMap :: !(IntMap SourcePath)
-    -- ^ Used to track source reference IDs
-    --
-  , currentBreakpointId :: !Int
-    -- ^ The current BreakpointId
-    --
   }
 
-type VariableReferences = IntMap (IntMap (IntMap Variable))
 ----------------------------------------------------------------------------
 type SessionId = Text
-----------------------------------------------------------------------------
-type SourcePath = Text
-----------------------------------------------------------------------------
-type SourceId = Int
 ----------------------------------------------------------------------------
 -- | Used to store a map of debugging sessions
 -- The 'ThreadId' is meant to be an asynchronous operation that
@@ -4077,11 +4037,3 @@ data Level = DEBUG | INFO | WARN | ERROR
 ----------------------------------------------------------------------------
 data DebugStatus = SENT | RECEIVED
   deriving (Show, Eq)
-----------------------------------------------------------------------------
-type VariableId  = Int
-----------------------------------------------------------------------------
-type FrameId  = Int
-----------------------------------------------------------------------------
-type ScopeId  = Int
-----------------------------------------------------------------------------
-type BreakpointId = Int
