@@ -685,10 +685,10 @@ defaultCapabilities :: Capabilities
 defaultCapabilities = capabilities
   where
     capabilities = Capabilities
-      { supportsConfigurationDoneRequest      = True
+      { supportsConfigurationDoneRequest      = False
       , supportsFunctionBreakpoints           = False
       , supportsConditionalBreakpoints        = False
-      , supportsHitConditionalBreakpoints     = True
+      , supportsHitConditionalBreakpoints     = False
       , supportsEvaluateForHovers             = False
       , exceptionBreakpointFilters            = []
       , supportsStepBack                      = False
@@ -698,21 +698,17 @@ defaultCapabilities = capabilities
       , supportsStepInTargetsRequest          = False
       , supportsCompletionsRequest            = False
       , completionTriggerCharacters           = []
-      , supportsModulesRequest                = True
-      , additionalModuleColumns               = [ defaultColumnDescriptor
-                                                  { columnDescriptorAttributeName = "Extra"
-                                                  , columnDescriptorLabel = "Label"
-                                                  }
-                                                ]
+      , supportsModulesRequest                = False
+      , additionalModuleColumns               = []
       , supportedChecksumAlgorithms           = []
       , supportsRestartRequest                = False
       , supportsExceptionOptions              = False
-      , supportsValueFormattingOptions        = True
+      , supportsValueFormattingOptions        = False
       , supportsExceptionInfoRequest          = False
-      , supportTerminateDebuggee              = True
+      , supportTerminateDebuggee              = False
       , supportSuspendDebuggee                = False
       , supportsDelayedStackTraceLoading      = False
-      , supportsLoadedSourcesRequest          = True
+      , supportsLoadedSourcesRequest          = False
       , supportsLogPoints                     = False
       , supportsTerminateThreadsRequest       = False
       , supportsSetExpression                 = False

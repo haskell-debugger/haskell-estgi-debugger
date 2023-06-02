@@ -134,10 +134,23 @@ withServer :: IO () -> IO ()
 withServer test = withAsync server (const test)
   where
     server = runDAPServer config mockServerTalk
+    capabilities = defaultCapabilities
+      { supportsConfigurationDoneRequest      = True
+      , supportsHitConditionalBreakpoints     = True
+      , supportsModulesRequest                = True
+      , additionalModuleColumns               = [ defaultColumnDescriptor
+                                                  { columnDescriptorAttributeName = "Extra"
+                                                  , columnDescriptorLabel = "Label"
+                                                  }
+                                                ]
+      , supportsValueFormattingOptions        = True
+      , supportTerminateDebuggee              = True
+      , supportsLoadedSourcesRequest          = True
+      }
     config = ServerConfig
       { host = testHost
       , port = testPort
-      , serverCapabilities = defaultCapabilities
+      , serverCapabilities = capabilities
       , debugLogging = False
       }
 
