@@ -26,7 +26,7 @@ export function activate(context: vscode.ExtensionContext) {
 		// The code you place here will be executed every time your command is executed
 		// Display a message box to the user
 		vscode.debug.activeDebugSession?.customRequest('garbageCollect');
-                window.showInformationMessage('Running garbage collection...');
+                //window.showInformationMessage('Running garbage collection...');
 	}));
 
 	runDebugger (context, new MockDebugAdapterServerDescriptorFactory());

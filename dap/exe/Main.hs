@@ -88,10 +88,24 @@ getConfig = do
   let
     hostDefault = "127.0.0.1"
     portDefault = 4711
+    capabilities = defaultCapabilities
+      { supportsConfigurationDoneRequest      = True
+      , supportsHitConditionalBreakpoints     = True
+      , supportsEvaluateForHovers             = False
+      , supportsModulesRequest                = True
+      , additionalModuleColumns               = [ defaultColumnDescriptor
+                                                  { columnDescriptorAttributeName = "Extra"
+                                                  , columnDescriptorLabel = "Label"
+                                                  }
+                                                ]
+      , supportsValueFormattingOptions        = True
+      , supportTerminateDebuggee              = True
+      , supportsLoadedSourcesRequest          = True
+      }
   ServerConfig
     <$> do fromMaybe hostDefault <$> lookupEnv "DAP_HOST"
     <*> do fromMaybe portDefault . (readMaybe =<<) <$> do lookupEnv "DAP_PORT"
-    <*> pure defaultCapabilities
+    <*> pure capabilities
     <*> pure True
 ----------------------------------------------------------------------------
 -- | VSCode arguments are custom for attach
@@ -210,15 +224,6 @@ handleDebuggerExceptions e = do
   logError $ BL8.pack ("Caught: " <> show e)
   sendTerminatedEvent (TerminatedEvent False)
   sendExitedEvent (ExitedEvent 1)
-
-pathToName path =
-  case splitFileName (cs path) of
-    (init -> moduleName, takeExtension -> ".ghccore") ->
-      cs (moduleName <> ".core")
-    (init -> moduleName, takeExtension -> ".stgbin") ->
-      cs (moduleName <> ".stg")
-    (init -> moduleName, takeExtension -> ext) ->
-      cs (moduleName <> ext)
 
 ----------------------------------------------------------------------------
 -- | Clears the currently known breakpoint set
@@ -431,7 +436,6 @@ talk CommandSource = do
   sendSourceResponse (SourceResponse source Nothing)
 ----------------------------------------------------------------------------
 talk CommandThreads = do
-  resetObjectLifetimes
   allThreads <- IntMap.toList . ssThreads <$> getStgState
   sendThreadsResponse
     [ Thread
@@ -480,6 +484,18 @@ talk CommandSetDataBreakpoints        = sendSetDataBreakpointsResponse []
 talk CommandSetExceptionBreakpoints   = sendSetExceptionBreakpointsResponse []
 talk CommandSetFunctionBreakpoints    = sendSetFunctionBreakpointsResponse []
 talk CommandSetInstructionBreakpoints = sendSetInstructionBreakpointsResponse []
+----------------------------------------------------------------------------
+talk CommandEvaluate = do
+  EvaluateArguments {..} <- getArguments
+  sendEvaluateResponse EvaluateResponse
+    { evaluateResponseResult  = "evaluated value for " <> evaluateArgumentsExpression
+    , evaluateResponseType    = "evaluated type for " <> evaluateArgumentsExpression
+    , evaluateResponsePresentationHint    = Nothing
+    , evaluateResponseVariablesReference  = 1
+    , evaluateResponseNamedVariables      = Just 1
+    , evaluateResponseIndexedVariables    = Nothing
+    , evaluateResponseMemoryReference     = Nothing
+    }
 ----------------------------------------------------------------------------
 talk cmd = logInfo $ BL8.pack ("GOT cmd " <> show cmd)
 ----------------------------------------------------------------------------
@@ -620,13 +636,15 @@ generateScopesForTopStackFrame frameIdDesc closureId env = do
   scopeVarablesRef <- getVariablesRef $ VariablesRef_StackFrameVariables frameIdDesc
   setVariables scopeVarablesRef
     [ defaultVariable
-      { variableName  = cs binderName <> (if binderScope == ModulePublic then "" else cs ('_' : show u))
+      { variableName  = displayName
       , variableValue = cs variableValue
       , variableType  = Just (cs variableType)
+      , variableEvaluateName = Just $ displayName <> " evaluate"
       }
     | (Id (Binder{..}), (_, atom)) <- M.toList env
     , let (variableType, variableValue) = getAtomTypeAndValue atom
           BinderId u = binderId
+          displayName = if binderScope == ModulePublic then cs binderName else cs (show u)
     ]
   pure
     [ defaultScope
@@ -656,13 +674,15 @@ generateScopes frameIdDesc stackCont@(CaseOf _ closureId env _ _ _) = do
     -- DMJ: for now everything is local.
     -- Inspect StaticOrigin to put things top-level, or as arguments, where applicable
     [ defaultVariable
-      { variableName  = cs binderName <> (if binderScope == ModulePublic then "" else cs ('_' : show u))
+      { variableName  = displayName
       , variableValue = cs variableValue
       , variableType  = Just (cs variableType)
+      , variableEvaluateName = Just $ displayName <> " evaluate"
       }
     | (Id (Binder{..}), (_, atom)) <- M.toList env
     , let (variableType, variableValue) = getAtomTypeAndValue atom
           BinderId u = binderId
+          displayName = if binderScope == ModulePublic then cs binderName else cs (show u)
     ]
   pure
     [ defaultScope
@@ -1101,7 +1121,7 @@ getSourceName qualifiedModuleName = \case
   GhcStg    -> cs qualifiedModuleName <> ".ghcstg"
   Cmm       -> cs qualifiedModuleName <> ".cmm"
   Asm       -> cs qualifiedModuleName <> ".s"
-  ExtStg    -> cs qualifiedModuleName <> ".stgbin"
+  ExtStg    -> cs qualifiedModuleName <> ".stgbin.hs"
   FFICStub  -> cs qualifiedModuleName <> "_stub.c"
   FFIHStub  -> cs qualifiedModuleName <> "_stub.h"
   ForeignC  -> cs qualifiedModuleName
