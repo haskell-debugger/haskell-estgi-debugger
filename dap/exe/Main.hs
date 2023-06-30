@@ -578,7 +578,11 @@ getValidSourceRefFromSource Source{..} = do
         pure srcDesc
   case maybeSrcDesc of
     Just srcDesc  -> Just <$> getSourceRef srcDesc
-    Nothing       -> pure sourceSourceReference
+    Nothing       -> case sourceSourceReference of
+      Just srcRef
+        | Bimap.memberR srcRef dapSourceRefMap
+        -> pure sourceSourceReference
+      _ -> pure Nothing
 
 ----------------------------------------------------------------------------
 -- | Retrieves list of modules from .fullpak file
@@ -1130,26 +1134,19 @@ getSourceFromSourceRefDescriptor :: DapSourceRefDescriptor -> Adaptor ESTG Sourc
 getSourceFromSourceRefDescriptor sourceRefDesc@(SourceRef_SourceFileInFullpak sourceLanguage qualModName) = do
   sources <- if sourceLanguage /= ExtStg then pure Nothing else do
     ModuleInfo{..} <- getsApp $ (M.! qualModName) . moduleInfoMap
-    hsSource    <- getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak Haskell  qualModName)
-    coreSource  <- getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak GhcCore  qualModName)
-    stgSource   <- getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak GhcStg   qualModName)
-    cmmSource   <- getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak Cmm      qualModName)
-    asmSource   <- getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak Asm      qualModName)
-    cStubSource <- getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak FFICStub qualModName)
-    hStubSource <- getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak FFIHStub qualModName)
-    pure . Just $
-      [ hsSource
-      , coreSource
-      , cmmSource
-      , asmSource
-      , stgSource
+    Just <$> sequence (
+      [ getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak Haskell  qualModName)
+      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak GhcCore  qualModName)
+      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak GhcStg   qualModName)
+      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak Cmm      qualModName)
+      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak Asm      qualModName)
       ] ++
-      [ cStubSource
+      [ getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak FFICStub qualModName)
       | cStub
       ] ++
-      [ hStubSource
+      [ getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak FFIHStub qualModName)
       | hStub
-      ]
+      ])
   let --sourcePath = cs $ getSourcePath qualModName sourceLanguage
       sourceName = cs $ getSourceName qualModName sourceLanguage
   sourceRef <- getSourceRef sourceRefDesc
