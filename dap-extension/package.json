@@ -1,6 +1,6 @@
 {
-  "name": "dap-extension",
-  "displayName": "dap-extension",
+  "name": "dap-estgi-extension",
+  "displayName": "Haskell DAP ESTGi",
   "description": "Debug with VSCode",
   "version": "0.0.1",
   "engines": {
@@ -9,51 +9,52 @@
   "categories": [
     "Debuggers"
   ],
-  "activationEvents": [ "onDebug", "onDebugResolve:dap-extension", "onDebug:garbageCollect" ],
+  "activationEvents": [ "onDebug", "onDebugResolve:dap-estgi-extension", "onDebug:garbageCollect" ],
   "main": "./out/extension.js",
   "contributes": {
     "menus": {
       "debug/toolBar":
-	[
-	 { "when": "inDebugMode",
-           "command": "dap-extension.garbageCollect",
+        [
+         { "when": "inDebugMode",
+           "command": "dap-estgi-extension.garbageCollect",
            "group": "debug"
          }
       ]
     },
     "commands" :[
       {
-	"command": "dap-extension.garbageCollect",
+        "command": "dap-estgi-extension.garbageCollect",
         "category": "debug",
-	"title": "Garbage Collect"
+        "title": "Garbage Collect"
       }
     ],
     "debuggers": [
-      { "type": "dap-extension",
-	"languages": [
-	    "haskell"
-	],
-	"program": "${workspaceFolder}/test.fullpak",
-	"label": "dap-extension",
-	"configurationAttributes": {
-	  "attach": {
-	    "required": ["program"],
-	    "properties": {
-	      "program": {
-		"type": "string",
-		"description": "Absolute path to the program",
-		"default": "${workspaceFolder}/test.fullpak"
-	      }
-	    }
-	  }
-	},
-	"initialConfigurations": [
-	  {
-	    "type": "Connect to DAP ESTGi",
-	    "request": "attach",
-	    "program": "${workspaceFolder}/test.fullpak"
-	  }
-	]
+      { "type": "dap-estgi-extension",
+        "languages": [
+            "haskell"
+        ],
+        "program": "${workspaceFolder}/**ghc_stgapp",
+        "label": "Haskell DAP ESTGi",
+        "configurationAttributes": {
+          "attach": {
+            "required": ["program"],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Absolute path to the program",
+                "default": "${workspaceFolder}/**ghc_stgapp"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "name": "Connect to DAP ESTGi",
+            "type": "dap-estgi-extension",
+            "request": "attach",
+            "program": "${workspaceFolder}/**ghc_stgapp"
+          }
+        ]
       }
     ]
   },

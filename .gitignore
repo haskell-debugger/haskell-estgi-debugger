@@ -7,6 +7,7 @@ npm-debug.log
 mock-debug.txt
 *.vsix
 .DS_Store
+dap-extension/package-lock.json
 
 # haskell
 stack.yaml.lock
