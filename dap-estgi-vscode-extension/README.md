@@ -1,4 +1,4 @@
-# dap-extension README
+# dap-estgi-extension README
 
 This is the README for your extension "dap-estgi-extension". After writing up a brief description, we recommend including the following sections.
 
@@ -17,7 +17,9 @@ Enable `allow breakpoints everywhere` option in VSCode settings.
 * Open your project folder that was compiled with `ghc-wpc` or `wpc-plugin`
 * Select the debug view on the side bar
 * click to `create a launch.json file`, then select `Haskell DAP ESTGi`
-* edit the `program` field to be more specific with the application name if the debugee project has multiple executables ; if there is only one executable then the default value should work
+* edit the `program` field to be more specific with the application name if the debugee project has multiple executables  
+  if there is only one executable then the default value should work  
+  a more specific pattern would be: `"program": "${workspaceFolder}/**EXECUTABLE_NAME*ghc_stgapp"`
 
 * start `dap` server: `(cd dap-estgi-server ; stack run)`
 
