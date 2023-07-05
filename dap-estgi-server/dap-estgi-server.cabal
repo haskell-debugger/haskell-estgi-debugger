@@ -1,0 +1,50 @@
+name:               dap-estgi
+version:            0.1.0.0
+description:        Debug Adaptor Protocol (DAP) implementation for External STG Interpreter
+synopsis:           Debug adaptor protocol implementation for ESTGi
+bug-reports:        https://github.com/dap/issues
+license:            BSD3
+license-file:       LICENSE
+author:             David Johnson
+maintainer:         djohnson.m@gmail.com
+copyright:          (c) 2023 David Johnson
+category:           Debuggers, Language
+build-type:         Simple
+tested-with:        GHC==9.2.4
+cabal-version:      >= 1.10
+
+extra-source-files:
+  CHANGELOG.md
+
+executable dap-estgi
+  main-is:
+    Main.hs
+  ghc-options:
+    -threaded
+  build-depends:
+      ansi-wl-pprint
+    , base < 5
+    , containers
+    , dap
+    , bytestring
+    , external-stg-interpreter
+    , external-stg-syntax
+    , external-stg
+    , filepath
+    , filemanip
+    , lifted-base
+    , network
+    , unagi-chan
+    , unordered-containers
+    , string-conversions
+    , aeson
+    , text
+    , time
+    , mtl
+    , yaml
+    , zip
+    , bimap
+  hs-source-dirs:
+    src
+  default-language:
+    Haskell2010
