@@ -167,9 +167,10 @@ findProgram globPattern = do
 ----------------------------------------------------------------------------
 initESTG :: AttachArgs -> Adaptor ESTG ()
 initESTG AttachArgs {..} = do
-  ghcstgappPath <- liftIO $ findProgram program >>= \case
+  ghcstgappPath <- (liftIO $ findProgram program) >>= \case
     [fname] -> pure fname
-    names   -> fail $ "ambiguous program path, multiple matches: " ++ show names
+    []      -> sendError (ErrorMessage (T.pack $ unlines ["No .ghc_stgapp program found at:", program])) Nothing
+    names   -> sendError (ErrorMessage (T.pack $ unlines $ ["Ambiguous program path:", program, "Use more specific path pattern to fix the issue.", "Multiple matches:"] ++ names)) Nothing
   let fullpakPath = ghcstgappPath -<.> ".fullpak"
   liftIO $ mkFullpak ghcstgappPath False False fullpakPath
   moduleInfos <- liftIO $ getModuleListFromFullPak fullpakPath
