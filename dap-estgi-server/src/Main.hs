@@ -115,9 +115,9 @@ getConfig = do
 -- >      "__configurationTarget": 6,
 -- >      "__sessionId": "6c0ba6f8-e478-4698-821e-356fc4a72c3d",
 -- >      "name": "thing",
--- >      "program": "/home/dmjio/Desktop/stg-dap/test.fullpak",
+-- >      "program": "/home/dmjio/Desktop/stg-dap/test.ghc_stgapp",
 -- >      "request": "attach",
--- >      "type": "dap-extension"
+-- >      "type": "dap-estgi-extension"
 -- >  }
 --
 data AttachArgs
@@ -125,7 +125,7 @@ data AttachArgs
   { __sessionId :: Text
     -- ^ SessionID from VSCode
   , program :: String
-    -- ^ Path to .fullpak file
+    -- ^ Path or glob pattern to .ghc_stgapp file
   } deriving stock (Show, Eq, Generic)
     deriving anyclass FromJSON
 ----------------------------------------------------------------------------
