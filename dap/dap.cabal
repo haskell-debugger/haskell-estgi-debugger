@@ -16,39 +16,6 @@ cabal-version:      >= 1.10
 extra-source-files:
   CHANGELOG.md
 
-executable dap-estg
-  main-is:
-    Main.hs
-  ghc-options:
-    -threaded
-  build-depends:
-      ansi-wl-pprint
-    , base < 5
-    , containers
-    , dap
-    , bytestring
-    , external-stg-interpreter
-    , external-stg-syntax
-    , external-stg
-    , filepath
-    , filemanip
-    , lifted-base
-    , network
-    , unagi-chan
-    , unordered-containers
-    , string-conversions
-    , aeson
-    , text
-    , time
-    , mtl
-    , yaml
-    , zip
-    , bimap
-  hs-source-dirs:
-    exe
-  default-language:
-    Haskell2010
-
 library
   exposed-modules:
     DAP

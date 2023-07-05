@@ -1,4 +1,4 @@
-packages: .
+packages: dap dap-estgi-server
 
 source-repository-package
     type: git
@@ -8,7 +8,7 @@ source-repository-package
 source-repository-package
     type: git
     location: https://github.com/grin-compiler/ghc-whole-program-compiler-project
-    tag: 9d7a96a0b831f980d8c9d5a30a9185b64fbbfa31
+    tag: 80e408ebdeaf5c1cea72bfbf86823c32d4fdafbe
     subdir:
       external-stg
       external-stg-syntax

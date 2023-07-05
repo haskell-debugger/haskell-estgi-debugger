@@ -1,4 +1,4 @@
-name:               dap-estgi
+name:               dap-estgi-server
 version:            0.1.0.0
 description:        Debug Adaptor Protocol (DAP) implementation for External STG Interpreter
 synopsis:           Debug adaptor protocol implementation for ESTGi

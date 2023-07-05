@@ -1,7 +1,8 @@
 resolver: lts-20.18
 
 packages:
-  - '.'
+  - dap
+  - dap-estgi-server
 
 extra-deps:
   - souffle-haskell-3.5.1
