@@ -51,12 +51,13 @@ import           Data.Maybe                            ( fromMaybe )
 import           Data.List                             ( sortOn )
 import           GHC.Generics                          ( Generic )
 import           System.Environment                    ( lookupEnv )
-import           System.FilePath                       ((</>), takeDirectory, takeExtension, dropExtension, splitFileName)
+import           System.FilePath                       ( (-<.>), (</>), takeDirectory, takeExtension, dropExtension, splitFileName, splitPath, joinPath)
 import           Text.Read                             ( readMaybe )
 import qualified Data.ByteString.Lazy.Char8            as BL8 ( pack, unpack, fromStrict, toStrict )
 import qualified Control.Concurrent.Chan.Unagi.Bounded as Unagi
 import           Control.Concurrent.MVar               ( MVar )
 import qualified Control.Concurrent.MVar               as MVar
+import qualified System.FilePath.Find                  as Glob
 ----------------------------------------------------------------------------
 import           Stg.Syntax                            hiding (sourceName, Scope)
 import           Stg.IRLocation
@@ -69,6 +70,7 @@ import           Stg.Interpreter.Debugger
 import           Stg.Interpreter.Debugger.UI
 import           Stg.IO
 import           Stg.Program
+import           Stg.Fullpak
 import           Data.Yaml                             hiding (Array)
 ----------------------------------------------------------------------------
 import           DAP                                   hiding (send)
@@ -153,12 +155,24 @@ data ESTG
     -- ^ monotinic counter for unique BreakpointId assignment
     --
   }
+
+findProgram :: String -> IO [FilePath]
+findProgram globPattern = do
+  let isPattern = any (`elem` ("[*?" :: String))
+      startDir = joinPath . takeWhile (not . isPattern) . splitPath $ takeDirectory globPattern
+  Glob.find Glob.always (Glob.filePath Glob.~~? globPattern) startDir
+
 ----------------------------------------------------------------------------
 -- | Intialize ESTG interpreter
 ----------------------------------------------------------------------------
 initESTG :: AttachArgs -> Adaptor ESTG ()
 initESTG AttachArgs {..} = do
-  moduleInfos <- liftIO $ getModuleListFromFullPak program
+  ghcstgappPath <- liftIO $ findProgram program >>= \case
+    [fname] -> pure fname
+    names   -> fail $ "ambiguous program path, multiple matches: " ++ show names
+  let fullpakPath = ghcstgappPath -<.> ".fullpak"
+  liftIO $ mkFullpak ghcstgappPath False False fullpakPath
+  moduleInfos <- liftIO $ getModuleListFromFullPak fullpakPath
   (dbgAsyncI, dbgAsyncO) <- liftIO (Unagi.newChan 100)
   dbgRequestMVar <- liftIO MVar.newEmptyMVar
   dbgResponseMVar <- liftIO MVar.newEmptyMVar
@@ -170,7 +184,7 @@ initESTG AttachArgs {..} = do
         }
       estg = ESTG
         { debuggerChan          = dbgChan
-        , fullPakPath           = program
+        , fullPakPath           = fullpakPath
         , moduleInfoMap         = M.fromList [(cs $ qualifiedModuleName mi, mi) | mi <- moduleInfos]
         , breakpointMap         = mempty
         , dapSourceRefMap       = Bimap.empty
@@ -181,7 +195,7 @@ initESTG AttachArgs {..} = do
         }
   flip catch handleDebuggerExceptions
     $ registerNewDebugSession __sessionId estg
-      (loadAndRunProgram True True program [] dbgChan DbgStepByStep False defaultDebugSettings)
+      (loadAndRunProgram True True fullpakPath [] dbgChan DbgStepByStep False defaultDebugSettings)
       (handleDebugEvents dbgChan)
 
 ----------------------------------------------------------------------------
