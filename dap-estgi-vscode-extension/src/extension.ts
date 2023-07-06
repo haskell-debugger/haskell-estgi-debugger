@@ -22,7 +22,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// The commandId parameter must match the command field in package.json
 		// The code you place here will be executed every time your command is executed
 		// Display a message box to the user
-	context.subscriptions.push(vscode.commands.registerCommand('dap-extension.garbageCollect', () => {
+	context.subscriptions.push(vscode.commands.registerCommand('dap-estgi-extension.garbageCollect', () => {
 		// The code you place here will be executed every time your command is executed
 		// Display a message box to the user
 		vscode.debug.activeDebugSession?.customRequest('garbageCollect');
@@ -33,7 +33,7 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function runDebugger (context: vscode.ExtensionContext, factory: MockDebugAdapterServerDescriptorFactory) {
-	context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory('dap-extension', factory));
+	context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory('dap-estgi-extension', factory));
 	console.log('made it to runDebugger');
 
 	vscode.debug.onDidChangeBreakpoints((e) => {
