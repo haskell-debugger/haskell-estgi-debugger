@@ -31,6 +31,7 @@ The `dap-estgi-server` and `dap-estgi-vscode-extension` are application specific
 1. VSCode setup  
    Enable `allow breakpoints everywhere` option in VSCode settings.
 3. Run `dap-estgi-extension`
+   * Run: `(cd dap-estgi-vscode-extension ; npm install)`
    * Open `dap-estgi-vscode-extension` folder by using the `Files/Open Folder` menu.
    * Open the `src/extension.ts` file.
    * Press F5 to run the extension in a new VSCode window.
