@@ -34,7 +34,7 @@ The `dap-estgi-server` and `dap-estgi-vscode-extension` are application specific
    * Run: `(cd dap-estgi-vscode-extension ; npm install)`
    * Open `dap-estgi-vscode-extension` folder by using the `Files/Open Folder` menu.
    * Open the `src/extension.ts` file.
-   * Press F5 to run the extension in a new VSCode window.
+   * Press F5 to run the extension in a new VSCode [Extension Development Host] window.
 3. Start `dap-estgi-server`  
    `(cd dap-estgi-server ; stack run)`
 4. Compile debuggee program with GHC-WPC using stack  
@@ -54,7 +54,7 @@ The `dap-estgi-server` and `dap-estgi-vscode-extension` are application specific
              url: "https://github.com/grin-compiler/foundation-pak/releases/download/ghc-9.2.7/ghc-9.2.7-x86_64-apple-darwin.tar.xz"
      ```
    * Run: `stack build`
-5. Open debuggee program in VSCode  
+5. Open debuggee program in VSCode [Extension Development Host]  
    * Open debugge project folder by using the `Files/Open Folder` menu.
    * Select the debug view on the side bar
    * Click to `create a launch.json file`, then select `Haskell DAP ESTGi`
@@ -69,5 +69,5 @@ The `dap-estgi-server` and `dap-estgi-vscode-extension` are application specific
    ![](docs-images/dap-03-start-dap-estgi-server-5fps.avif)
 4. Compile debuggee program with GHC-WPC using stack  
    ![](docs-images/dap-04-compile-debuggee-5fps.avif)
-5. Open debuggee program in VSCode  
+5. Open debuggee program in VSCode [Extension Development Host]  
    ![](docs-images/dap-05-open-debuggee-in-vscode-5fps.avif)
