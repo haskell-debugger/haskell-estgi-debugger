@@ -30,15 +30,14 @@ The `dap-estgi-server` and `dap-estgi-vscode-extension` are application specific
 
 1. VSCode setup  
    Enable `allow breakpoints everywhere` option in VSCode settings.
-3. Run `dap-estgi-extension`
+2. Run `dap-estgi-extension`
    * Run: `(cd dap-estgi-vscode-extension ; npm install)`
    * Open `dap-estgi-vscode-extension` folder by using the `Files/Open Folder` menu.
    * Open the `src/extension.ts` file.
    * Press F5 to run the extension in a new VSCode window.
-5. Start `dap-estgi-server`  
+3. Start `dap-estgi-server`  
    `(cd dap-estgi-server ; stack run)`
-
-7. Compile debuggee program with GHC-WPC using stack  
+4. Compile debuggee program with GHC-WPC using stack  
    * Add the following lines to debuggee's `stack.yaml`:
      ```
      # use custom ext-stg whole program compiler GHC
@@ -55,8 +54,20 @@ The `dap-estgi-server` and `dap-estgi-vscode-extension` are application specific
              url: "https://github.com/grin-compiler/foundation-pak/releases/download/ghc-9.2.7/ghc-9.2.7-x86_64-apple-darwin.tar.xz"
      ```
    * Run: `stack build`
-8. Open debuggee program in VSCode  
+5. Open debuggee program in VSCode  
    * Open debugge project folder by using the `Files/Open Folder` menu.
    * Select the debug view on the side bar
    * Click to `create a launch.json file`, then select `Haskell DAP ESTGi`
    * Press F5 or the `Play` button to start debugging
+
+## Setup in video
+1. VSCode setup  
+   ![](docs-images/dap-01-vscode-setup-5fps.avif)
+2. Run `dap-estgi-extension`
+   ![](docs-images/dap-02-run-dap-estgi-extension-5fps.avif)
+3. Start `dap-estgi-server`  
+   ![](docs-images/dap-03-start-dap-estgi-server-5fps.avif)
+4. Compile debuggee program with GHC-WPC using stack  
+   ![](docs-images/dap-04-compile-debuggee-5fps.avif)
+5. Open debuggee program in VSCode  
+   ![](docs-images/dap-05-open-debuggee-in-vscode-5fps.avif)
