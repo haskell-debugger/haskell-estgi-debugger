@@ -8,7 +8,7 @@ This repository contains the components for Haskell debugging based on the Debug
 
 ## Overview
 
-The `dap-estgi-vscode-extension` turns VSCode into Haskell debugger.
+The `dap-estgi-vscode-extension` turns VSCode into a Haskell debugger.
 VSCode offers a nice debugger UI while the debugger features are provided by the External STG Interpreter DAP Server.
 
 ```mermaid
