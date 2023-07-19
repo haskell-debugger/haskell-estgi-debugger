@@ -52,6 +52,9 @@ The `dap-estgi-server` and `dap-estgi-vscode-extension` are application specific
          macosx-custom-wpc:
            9.2.7:
              url: "https://github.com/grin-compiler/foundation-pak/releases/download/ghc-9.2.7/ghc-9.2.7-x86_64-apple-darwin.tar.xz"
+         macosx-aarch64-custom-wpc:
+           9.2.7:
+             url: "https://github.com/grin-compiler/foundation-pak/releases/download/ghc-9.2.7/ghc-9.2.7-aarch64-apple-darwin.tar.xz"
      ```
    * Run: `stack build`
 5. Open debuggee program in VSCode [Extension Development Host]  
