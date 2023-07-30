@@ -58,7 +58,6 @@ test-suite tests
   other-modules:
     DAP.Response
     DAP.Internal
-    DAP.Server
     DAP.Adaptor
     DAP.Server
     DAP.Types
