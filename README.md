@@ -37,6 +37,10 @@ The `dap-estgi-server` and `dap-estgi-vscode-extension` are application specific
 ## Setup
  - Enable `allow breakpoints everywhere` option in VSCode settings.
 
+### Install Haskell ESTGi Debugger Dependencies
+   - Run `(cd haskell-estgi-debugger ; stack install zip-cmd)`
+   - Ensure `libgmp` is installed (e.g. if using homebrew, `brew install gmp`)
+
 ### Run `dap-estgi-extension`
    - Run `(cd dap-estgi-vscode-extension ; npm install)`
    - Open `dap-estgi-vscode-extension` folder by using the `Files/Open Folder` menu.
