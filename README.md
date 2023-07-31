@@ -37,6 +37,9 @@ The `dap-estgi-server` and `dap-estgi-vscode-extension` are application specific
 ## Setup
  - Enable `allow breakpoints everywhere` option in VSCode settings.
 
+### Install Haskell ESTGi Debugger Dependencies
+   - Run `(cd haskell-estgi-debugger ; stack install zip-cmd)`
+
 ### Run `dap-estgi-extension`
    - Run `(cd dap-estgi-vscode-extension ; npm install)`
    - Open `dap-estgi-vscode-extension` folder by using the `Files/Open Folder` menu.
@@ -86,6 +89,8 @@ $ stack run --extra-include-dirs=/usr/local/opt/libomp/include --extra-lib-dirs=
 		   9.2.7:
 			 url: "https://github.com/grin-compiler/foundation-pak/releases/download/ghc-9.2.7/ghc-9.2.7-aarch64-apple-darwin.tar.xz"
 	 ```
+   - If on OSX, install `gmp` in debuggee program
+     i.e. install via brew: `(cd sample-program-to-debug ; brew install gmp)`
    - Run `stack build`
 	 i.e. build the provided sample hello world: `(cd sample-program-to-debug ; stack build)`
 
