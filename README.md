@@ -10,7 +10,7 @@
 
 This repository contains the components for Haskell debugging based on the Debug Adapter Protocol ([DAP](https://microsoft.github.io/debug-adapter-protocol)).
 
-  - [`dap/`](dap/): Language and backend independent simple DAP library
+  - [`dap/`](https://github.com/haskell-debugger/dap/): Language and backend independent DAP library
   - [`dap-estgi-server/`](dap-estgi-server/): DAP server for External STG Interpreter (DAP-ESTGi)
   - [`dap-estgi-vscode-extension/`](dap-estgi-vscode-extension/): VSCode extension to support Haskell debugging using DAP-ESTGi server
 

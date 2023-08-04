@@ -1,7 +1,6 @@
 resolver: lts-20.18
 
 packages:
-  - dap
   - dap-estgi-server
 
 extra-deps:
@@ -11,6 +10,9 @@ extra-deps:
 
   - git: https://github.com/TeofilC/digest
     commit: ac9616b94cb8c4a9e07188d19979a6225ebd5a10
+
+  - git: https://github.com/haskell-debugger/dap
+    commit: 1f8ed2f97e9d41f037274791d66f1e0984c1ed17
 
   - git: https://github.com/grin-compiler/ghc-whole-program-compiler-project
     commit: 80e408ebdeaf5c1cea72bfbf86823c32d4fdafbe
