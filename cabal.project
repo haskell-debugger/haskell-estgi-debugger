@@ -1,9 +1,14 @@
-packages: dap dap-estgi-server
+packages: dap-estgi-server
 
 source-repository-package
     type: git
     location: https://github.com/TeofilC/digest
     tag: ac9616b94cb8c4a9e07188d19979a6225ebd5a10
+
+source-repository-package
+    type: git
+    location: https://github.com/haskell-debugger/dap
+    tag: 3784cc0e703cbe300d4e4874328b8b8dd998ea5f
 
 source-repository-package
     type: git
