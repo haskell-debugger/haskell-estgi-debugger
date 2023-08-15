@@ -8,11 +8,14 @@
 
 ## Introduction
 
-This repository contains the components for Haskell debugging based on the Debug Adapter Protocol ([DAP](https://microsoft.github.io/debug-adapter-protocol)).
+This repository contains the `dap-estgi-server` for Haskell debugging based on the Debug Adapter Protocol ([DAP](https://microsoft.github.io/debug-adapter-protocol)).
+
+  - [`dap-estgi-server/`](dap-estgi-server/): DAP server for External STG Interpreter (DAP-ESTGi)
+
+This library depends on two other libraries as well
 
   - [`dap/`](https://github.com/haskell-debugger/dap/): Language and backend independent DAP library
-  - [`dap-estgi-server/`](dap-estgi-server/): DAP server for External STG Interpreter (DAP-ESTGi)
-  - [`dap-estgi-vscode-extension/`](dap-estgi-vscode-extension/): VSCode extension to support Haskell debugging using DAP-ESTGi server
+  - [`dap-estgi-vscode-extension/`](https://github.com/haskell-debugger/dap-estgi-vscode-extension/): VSCode extension to support Haskell debugging using DAP-ESTGi server
 
 ## Overview
 
@@ -28,21 +31,19 @@ flowchart LR
 	subgraph Debugger
 	C -.- |HS library API| D(External STG Interpreter)
 	end
-
 ```
 
-The `dap-estgi-server` and `dap-estgi-vscode-extension` are application specific components, while the
-`dap` library is designed to be application independent to support any project that needs a simple DAP framework.
+The `dap-estgi-server` and `dap-estgi-vscode-extension` are application specific components, while the `dap` library is designed to be application independent to support any project that needs a simple DAP framework.
 
 ## Setup
- - Enable `allow breakpoints everywhere` option in VSCode settings.
+ - Enable `Allow breakpoints everywhere` option in VSCode settings.
 
 ### Install Haskell ESTGi Debugger Dependencies
    - Run `(cd haskell-estgi-debugger ; stack install zip-cmd)`
    - Ensure `libgmp` is installed (e.g. if using homebrew, `brew install gmp`)
 
-### Run `dap-estgi-extension`
-   - Run `(cd dap-estgi-vscode-extension ; npm install)`
+### Install `dap-estgi-extension`
+   - Run `(git clone https://github.com/haskell-debugger/dap-estgi-vscode-extension; cd dap-estgi-vscode-extension ; npm install)`
    - Open `dap-estgi-vscode-extension` folder by using the `Files/Open Folder` menu.
    - Open the `src/extension.ts` file.
    - Press F5 to run the extension in a new VSCode [Extension Development Host] window.
