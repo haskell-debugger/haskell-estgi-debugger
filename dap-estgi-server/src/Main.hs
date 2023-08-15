@@ -88,7 +88,7 @@ main = do
 getConfig :: IO ServerConfig
 getConfig = do
   let
-    hostDefault = "127.0.0.1"
+    hostDefault = "0.0.0.0"
     portDefault = 4711
     capabilities = defaultCapabilities
       { supportsConfigurationDoneRequest      = True
