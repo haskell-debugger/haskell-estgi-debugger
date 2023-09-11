@@ -18,6 +18,7 @@
 {-# LANGUAGE DeriveGeneric       #-}
 {-# LANGUAGE ViewPatterns        #-}
 {-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE TupleSections       #-}
 ----------------------------------------------------------------------------
 module Main (main) where
 ----------------------------------------------------------------------------
@@ -27,6 +28,7 @@ import           Text.PrettyPrint.ANSI.Leijen          (pretty, plain)
 import           Codec.Archive.Zip                     (withArchive, unEntrySelector, getEntries)
 import           Data.IntSet                           ( IntSet )
 import qualified Data.IntSet                           as IntSet
+import           Data.Set                              ( Set )
 import qualified Data.Set                              as Set
 import           Control.Arrow
 import           Data.IORef
@@ -51,7 +53,7 @@ import           Data.Maybe                            ( fromMaybe )
 import           Data.List                             ( sortOn )
 import           GHC.Generics                          ( Generic )
 import           System.Environment                    ( lookupEnv )
-import           System.FilePath                       ( (-<.>), (</>), takeDirectory, takeExtension, dropExtension, splitFileName, splitPath, joinPath)
+import           System.FilePath                       ( (-<.>), (</>), takeDirectory, takeExtension, dropExtension, splitFileName, splitPath, joinPath, splitDirectories)
 import           Text.Read                             ( readMaybe )
 import qualified Data.ByteString.Lazy.Char8            as BL8 ( pack, unpack, fromStrict, toStrict )
 import qualified Control.Concurrent.Chan.Unagi.Bounded as Unagi
@@ -109,6 +111,7 @@ getConfig = do
     <*> do fromMaybe portDefault . (readMaybe =<<) <$> do lookupEnv "DAP_PORT"
     <*> pure capabilities
     <*> pure True
+
 ----------------------------------------------------------------------------
 -- | VSCode arguments are custom for attach
 -- > "arguments": {
@@ -134,8 +137,9 @@ data ESTG
   = ESTG
   { debuggerChan      :: DebuggerChan
   , fullPakPath       :: String
-  , moduleInfoMap     :: Map Text ModuleInfo
   , breakpointMap     :: Map Stg.Breakpoint IntSet
+  , sourceCodeSet     :: Set SourceCodeDescriptor
+  , unitIdMap         :: Bimap UnitId PackageName
 
   -- application specific resource handling
 
@@ -173,7 +177,7 @@ initESTG AttachArgs {..} = do
     names   -> sendError (ErrorMessage (T.pack $ unlines $ ["Ambiguous program path:", program, "Use more specific path pattern to fix the issue.", "Multiple matches:"] ++ names)) Nothing
   let fullpakPath = ghcstgappPath -<.> ".fullpak"
   liftIO $ mkFullpak ghcstgappPath False False fullpakPath
-  moduleInfos <- liftIO $ getModuleListFromFullPak fullpakPath
+  (sourceCodeList, unitIdMap) <- liftIO $ getSourceCodeListFromFullPak fullpakPath
   (dbgAsyncI, dbgAsyncO) <- liftIO (Unagi.newChan 100)
   dbgRequestMVar <- liftIO MVar.newEmptyMVar
   dbgResponseMVar <- liftIO MVar.newEmptyMVar
@@ -186,8 +190,9 @@ initESTG AttachArgs {..} = do
       estg = ESTG
         { debuggerChan          = dbgChan
         , fullPakPath           = fullpakPath
-        , moduleInfoMap         = M.fromList [(cs $ qualifiedModuleName mi, mi) | mi <- moduleInfos]
         , breakpointMap         = mempty
+        , sourceCodeSet         = Set.fromList sourceCodeList
+        , unitIdMap             = unitIdMap
         , dapSourceRefMap       = Bimap.empty
         , dapFrameIdMap         = Bimap.empty
         , dapVariablesRefMap    = Bimap.empty
@@ -294,10 +299,15 @@ talk CommandInitialize = do
 
 talk CommandLoadedSources = do
   sendLoadedSourcesResponse =<< do
-    moduleInfos <- getsApp $ M.elems . moduleInfoMap
-    forM moduleInfos $ \ModuleInfo {..} -> case isCSource of
-      True  -> getSourceFromSourceRefDescriptor $ SourceRef_SourceFileInFullpak ForeignC qualifiedModuleName
-      False -> getSourceFromSourceRefDescriptor $ SourceRef_SourceFileInFullpak ExtStg   qualifiedModuleName
+    {-
+      list only Haskell ExtStg and ForeignC files
+    -}
+    let shouldInclude = \case
+          ExtStg{}    -> True
+          ForeignC{}  -> True
+          _           -> False
+    srcSet <- getsApp sourceCodeSet
+    mapM (getSourceFromSourceRefDescriptor . SourceRef_SourceFileInFullpak) $ filter shouldInclude $ Set.toList srcSet
 
 ----------------------------------------------------------------------------
 talk CommandModules = do
@@ -518,7 +528,9 @@ talk cmd = logInfo $ BL8.pack ("GOT cmd " <> show cmd)
 
 getSourceAndPositionForStgPoint :: Id -> StgPoint -> Adaptor ESTG (Maybe Source, Int, Int, Int, Int)
 getSourceAndPositionForStgPoint (Id Binder{..}) stgPoint = do
-  source <- getSourceFromSourceRefDescriptor $ SourceRef_SourceFileInFullpak ExtStg (cs $ getModuleName binderModule)
+  ESTG {..} <- getDebugSession
+  let Just packageName = Bimap.lookup binderUnitId unitIdMap
+  source <- getSourceFromSourceRefDescriptor $ SourceRef_SourceFileInFullpak $ ExtStg packageName (cs $ getModuleName binderModule)
   let Just sourceRef = sourceSourceReference source
   (_sourceCodeText, locations) <- getSourceFromFullPak sourceRef
   case filter ((== stgPoint) . fst) locations of
@@ -529,54 +541,52 @@ getSourceAndPositionForStgPoint (Id Binder{..}) stgPoint = do
 
 ----------------------------------------------------------------------------
 
-data ModuleInfo
-  = ModuleInfo
-  { cStub :: Bool
-    -- ^ If stubs.c is included in the .fullpak for this module
-  , hStub :: Bool
-    -- ^ If stubs.h is included in the .fullpak for this module
-  , isCSource :: Bool
-    -- ^ Is a C source file located in c-sources
-  , qualifiedModuleName :: Text
-    -- ^ Fully qualified module name
-  }
 ----------------------------------------------------------------------------
 -- | Retrieves list of modules from .fullpak file
--- TODO: Check if stubs file exists, if so, return it.
-getModuleListFromFullPak :: FilePath -> IO [ModuleInfo]
-getModuleListFromFullPak fullPakPath = do
-  let appName = "app.ghc_stgapp"
-  bytes <- readModpakL fullPakPath appName id
+getSourceCodeListFromFullPak :: FilePath -> IO ([SourceCodeDescriptor], Bimap UnitId PackageName)
+getSourceCodeListFromFullPak fullPakPath = do
   rawEntries <- fmap unEntrySelector . M.keys <$> withArchive fullPakPath getEntries
   let folderNames = Set.fromList (takeDirectory <$> rawEntries)
-  GhcStgApp {..} <- decodeThrow (BL8.toStrict bytes)
-  let
-    unitModules :: [String]
-    unitModules = concat
-      [ unitExposedModules ++ unitHiddenModules
-      | UnitLinkerInfo {..} <- appLibDeps
-      ]
-
-    cbitsSources :: [String]
-    cbitsSources =
-      [ entry
-      | entry <- rawEntries
-      , "cbits-source" `isPrefixOf` entry
-      ]
-
+      appInfoName = "app.info"
+  appInfoBytes <- readModpakL fullPakPath appInfoName id
+  AppInfo{..} <- decodeThrow (BL8.toStrict appInfoBytes)
+  let unitIdMap = Bimap.fromList
+        [ (UnitId $ cs ciUnitId, cs ciPackageName)
+        | CodeInfo{..} <- aiLiveCode
+        ]
+  {-
+    content:
+      haskell modules
+      foreign files
+  -}
   let rawEntriesSet = Set.fromList rawEntries
+      moduleCode pkg mod =
+        [ Haskell   pkg mod
+        , GhcCore   pkg mod
+        , GhcStg    pkg mod
+        , Cmm       pkg mod
+        , Asm       pkg mod
+        , ExtStg    pkg mod
+        , FFICStub  pkg mod
+        , FFIHStub  pkg mod
+        ]
+      haskellModuleCode :: [SourceCodeDescriptor]
+      haskellModuleCode =
+        [ srcDesc
+        | CodeInfo{..} <- aiLiveCode
+        , srcDesc <- moduleCode (cs ciPackageName) (cs ciModuleName)
+        , Set.member (getSourcePath srcDesc) rawEntriesSet
+        ]
 
-  pure
-    [ ModuleInfo
-      { cStub = (moduleName </> "module_stub.c") `Set.member` rawEntriesSet
-      , hStub = (moduleName </> "module_stub.h") `Set.member` rawEntriesSet
-      , qualifiedModuleName = cs moduleName
-      , ..
-      }
-    | moduleName <- unitModules <> appModules <> cbitsSources
-    , let isCSource = "cbits-source" `isPrefixOf` moduleName
-    , moduleName `Set.member` folderNames || isCSource
-    ]
+      cbitsSources :: [SourceCodeDescriptor]
+      cbitsSources =
+        [ ForeignC packageName path
+        | path <- rawEntries
+        , ("cbits-source" : unitIdString : _) <- [splitDirectories path]
+        , Just packageName <- [Bimap.lookup (UnitId $ cs unitIdString) unitIdMap]
+        ]
+
+  pure (haskellModuleCode ++ cbitsSources, unitIdMap)
 
 getValidSourceRefFromSource :: Source -> Adaptor ESTG (Maybe Int)
 getValidSourceRefFromSource Source{..} = do
@@ -604,14 +614,14 @@ getValidSourceRefFromSource Source{..} = do
 getSourceFromFullPak :: SourceId -> Adaptor ESTG (Text, [(StgPoint, SrcRange)])
 getSourceFromFullPak sourceId = do
   ESTG {..} <- getDebugSession
-  SourceRef_SourceFileInFullpak srcLang qualifiedModuleName <- case Bimap.lookupR sourceId dapSourceRefMap of
+  SourceRef_SourceFileInFullpak srcDesc <- case Bimap.lookupR sourceId dapSourceRefMap of
     Nothing     -> do
       sendError (ErrorMessage (T.pack $ "Unknown sourceId: " ++ show sourceId)) Nothing
     Just value  -> pure value
-  let sourcePath = getSourcePath qualifiedModuleName srcLang
+  let sourcePath = getSourcePath srcDesc
   liftIO $
-    case srcLang of
-      ExtStg -> do
+    case srcDesc of
+      ExtStg{} -> do
         m <- readModpakL fullPakPath sourcePath decodeStgbin
         pure . pShow $ pprModule m
       _ -> do
@@ -780,7 +790,7 @@ generateScopes frameIdDesc stackCont@(Catch atom blockAsync interruptible) = do
       , scopeNamedVariables = Just 3
       }
     ]
-generateScopes frameIdDesc stackCont@(RestoreExMask blockAsync interruptible) = do
+generateScopes frameIdDesc stackCont@(RestoreExMask _ blockAsync interruptible) = do
   scopeVarablesRef <- getVariablesRef $ VariablesRef_StackFrameVariables frameIdDesc
   setVariables scopeVarablesRef
     [ defaultVariable
@@ -843,10 +853,10 @@ generateScopes frameIdDesc stackCont@(Atomically atom) = do
       , scopeNamedVariables = Just 1
       }
     ]
-generateScopes frameIdDesc stackCont@(CatchRetry atom1 atom2 interruptible) = do
+generateScopes frameIdDesc stackCont@(CatchRetry primaryAction alternativeAction isRunningAlternative _tlog) = do
   scopeVarablesRef <- getVariablesRef $ VariablesRef_StackFrameVariables frameIdDesc
-  let (variableType1, variableValue1) = getAtomTypeAndValue atom1
-  let (variableType2, variableValue2) = getAtomTypeAndValue atom2
+  let (variableType1, variableValue1) = getAtomTypeAndValue primaryAction
+  let (variableType2, variableValue2) = getAtomTypeAndValue alternativeAction
   setVariables scopeVarablesRef
     [ defaultVariable
       { variableName = "First STM action"
@@ -855,14 +865,15 @@ generateScopes frameIdDesc stackCont@(CatchRetry atom1 atom2 interruptible) = do
       }
     , defaultVariable
       { variableName = "Second STM action"
-      , variableValue = T.pack (show atom2)
-      , variableType = Just (T.pack (show (typeOf atom2)))
+      , variableValue = cs variableValue2
+      , variableType = Just (cs variableType2)
       }
     , defaultVariable
-      { variableName = "Interruptible"
-      , variableValue = T.pack (show interruptible)
+      { variableName = "Is running alternativbe STM action"
+      , variableValue = T.pack (show isRunningAlternative)
       , variableType = Just "Bool"
       }
+      -- todo add tlog
     ]
   pure
     [ defaultScope
@@ -1105,65 +1116,71 @@ data DapVariablesRefDescriptor
   = VariablesRef_StackFrameVariables DapFrameIdDescriptor
   deriving (Show, Eq, Ord)
 
-data SourceLanguage
-  = Haskell
-  | GhcCore
-  | GhcStg
-  | Cmm
-  | Asm
-  | ExtStg
-  | FFICStub
-  | FFIHStub
-  | ForeignC
+data SourceCodeDescriptor
+  = Haskell   PackageName QualifiedModuleName
+  | GhcCore   PackageName QualifiedModuleName
+  | GhcStg    PackageName QualifiedModuleName
+  | Cmm       PackageName QualifiedModuleName
+  | Asm       PackageName QualifiedModuleName
+  | ExtStg    PackageName QualifiedModuleName
+  | FFICStub  PackageName QualifiedModuleName
+  | FFIHStub  PackageName QualifiedModuleName
+  | ForeignC  PackageName FilePath
   deriving (Show, Read, Eq, Ord)
 
 data DapSourceRefDescriptor
-  = SourceRef_SourceFileInFullpak SourceLanguage QualifiedModuleName
+  = SourceRef_SourceFileInFullpak SourceCodeDescriptor
   deriving (Show, Read, Eq, Ord)
 
-getSourcePath :: QualifiedModuleName -> SourceLanguage -> FilePath
-getSourcePath qualifiedModuleName = \case
-  Haskell   -> cs qualifiedModuleName </> "module.hs"
-  GhcCore   -> cs qualifiedModuleName </> "module.ghccore"
-  GhcStg    -> cs qualifiedModuleName </> "module.ghcstg"
-  Cmm       -> cs qualifiedModuleName </> "module.cmm"
-  Asm       -> cs qualifiedModuleName </> "module.s"
-  ExtStg    -> cs qualifiedModuleName </> "module.stgbin"
-  FFICStub  -> cs qualifiedModuleName </> "module_stub.c"
-  FFIHStub  -> cs qualifiedModuleName </> "module_stub.h"
-  ForeignC  -> cs qualifiedModuleName
+getSourcePath :: SourceCodeDescriptor -> FilePath
+getSourcePath = \case
+  Haskell  pkg mod -> "haskell" </> cs pkg </> cs mod </> "module.hs"
+  GhcCore  pkg mod -> "haskell" </> cs pkg </> cs mod </> "module.ghccore"
+  GhcStg   pkg mod -> "haskell" </> cs pkg </> cs mod </> "module.ghcstg"
+  Cmm      pkg mod -> "haskell" </> cs pkg </> cs mod </> "module.cmm"
+  Asm      pkg mod -> "haskell" </> cs pkg </> cs mod </> "module.s"
+  ExtStg   pkg mod -> "haskell" </> cs pkg </> cs mod </> "module.stgbin"
+  FFICStub pkg mod -> "haskell" </> cs pkg </> cs mod </> "module_stub.c"
+  FFIHStub pkg mod -> "haskell" </> cs pkg </> cs mod </> "module_stub.h"
+  ForeignC _pkg path -> cs path
 
-getSourceName :: QualifiedModuleName -> SourceLanguage -> String
-getSourceName qualifiedModuleName = \case
-  Haskell   -> cs qualifiedModuleName <> ".hs"
-  GhcCore   -> cs qualifiedModuleName <> ".ghccore"
-  GhcStg    -> cs qualifiedModuleName <> ".ghcstg"
-  Cmm       -> cs qualifiedModuleName <> ".cmm"
-  Asm       -> cs qualifiedModuleName <> ".s"
-  ExtStg    -> cs qualifiedModuleName <> ".stgbin.hs"
-  FFICStub  -> cs qualifiedModuleName <> "_stub.c"
-  FFIHStub  -> cs qualifiedModuleName <> "_stub.h"
-  ForeignC  -> cs qualifiedModuleName
+getSourceName :: SourceCodeDescriptor -> String
+getSourceName = \case
+  Haskell  pkg mod -> cs mod <> ".hs"
+  GhcCore  pkg mod -> cs mod <> ".ghccore"
+  GhcStg   pkg mod -> cs mod <> ".ghcstg"
+  Cmm      pkg mod -> cs mod <> ".cmm"
+  Asm      pkg mod -> cs mod <> ".s"
+  ExtStg   pkg mod -> cs mod <> ".stgbin.hs"
+  FFICStub pkg mod -> cs mod <> "_stub.c"
+  FFIHStub pkg mod -> cs mod <> "_stub.h"
+  ForeignC _pkg path -> cs path
 
 getSourceFromSourceRefDescriptor :: DapSourceRefDescriptor -> Adaptor ESTG Source
-getSourceFromSourceRefDescriptor sourceRefDesc@(SourceRef_SourceFileInFullpak sourceLanguage qualModName) = do
-  sources <- if sourceLanguage /= ExtStg then pure Nothing else do
-    ModuleInfo{..} <- getsApp $ (M.! qualModName) . moduleInfoMap
-    Just <$> sequence (
-      [ getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak Haskell  qualModName)
-      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak GhcCore  qualModName)
-      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak GhcStg   qualModName)
-      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak Cmm      qualModName)
-      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak Asm      qualModName)
+getSourceFromSourceRefDescriptor sourceRefDesc@(SourceRef_SourceFileInFullpak srcDesc) = do
+  srcDescSet <- getsApp sourceCodeSet
+  sources <- case srcDesc of
+    ExtStg packageName qualModName
+      | cStub <- FFICStub packageName qualModName
+      , hStub <- FFIHStub packageName qualModName
+      -> Just <$> sequence (
+      [ getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ Haskell  packageName qualModName)
+      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ GhcCore  packageName qualModName)
+      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ GhcStg   packageName qualModName)
+      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ Cmm      packageName qualModName)
+      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ Asm      packageName qualModName)
       ] ++
-      [ getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak FFICStub qualModName)
-      | cStub
+      [ getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak cStub)
+      | Set.member cStub srcDescSet
       ] ++
-      [ getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak FFIHStub qualModName)
-      | hStub
+      [ getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak hStub)
+      | Set.member hStub srcDescSet
       ])
-  let --sourcePath = cs $ getSourcePath qualModName sourceLanguage
-      sourceName = cs $ getSourceName qualModName sourceLanguage
+
+    _ -> pure Nothing
+
+  let --sourcePath = cs $ getSourcePath srcDesc
+      sourceName = cs $ getSourceName srcDesc
   sourceRef <- getSourceRef sourceRefDesc
   ESTG {..} <- getDebugSession
   pure defaultSource
@@ -1237,6 +1254,7 @@ getFreshBreakpointId = do
   modifyApp $ \s -> s { nextFreshBreakpointId = nextFreshBreakpointId s + 1 }
   pure bkpId
 
+type PackageName = Text
 type QualifiedModuleName = Text
 type BreakpointId = Int
 type SourceId = Int
