@@ -63,6 +63,7 @@ import qualified System.FilePath.Find                  as Glob
 ----------------------------------------------------------------------------
 import           Stg.Syntax                            hiding (sourceName, Scope)
 import           Stg.IRLocation
+import           Stg.Tickish                           ( collectTickish )
 import           Stg.Pretty
 import           Stg.Interpreter
 import           Stg.Interpreter.Debug
@@ -140,6 +141,7 @@ data ESTG
   , breakpointMap     :: Map Stg.Breakpoint IntSet
   , sourceCodeSet     :: Set SourceCodeDescriptor
   , unitIdMap         :: Bimap UnitId PackageName
+  , haskellSrcPathMap :: Bimap Name SourceCodeDescriptor
 
   -- application specific resource handling
 
@@ -177,7 +179,7 @@ initESTG AttachArgs {..} = do
     names   -> sendError (ErrorMessage (T.pack $ unlines $ ["Ambiguous program path:", program, "Use more specific path pattern to fix the issue.", "Multiple matches:"] ++ names)) Nothing
   let fullpakPath = ghcstgappPath -<.> ".fullpak"
   liftIO $ mkFullpak ghcstgappPath False False fullpakPath
-  (sourceCodeList, unitIdMap) <- liftIO $ getSourceCodeListFromFullPak fullpakPath
+  (sourceCodeList, unitIdMap, haskellSrcPathMap) <- liftIO $ getSourceCodeListFromFullPak fullpakPath
   (dbgAsyncI, dbgAsyncO) <- liftIO (Unagi.newChan 100)
   dbgRequestMVar <- liftIO MVar.newEmptyMVar
   dbgResponseMVar <- liftIO MVar.newEmptyMVar
@@ -193,6 +195,7 @@ initESTG AttachArgs {..} = do
         , breakpointMap         = mempty
         , sourceCodeSet         = Set.fromList sourceCodeList
         , unitIdMap             = unitIdMap
+        , haskellSrcPathMap     = haskellSrcPathMap
         , dapSourceRefMap       = Bimap.empty
         , dapFrameIdMap         = Bimap.empty
         , dapVariablesRefMap    = Bimap.empty
@@ -321,13 +324,75 @@ talk CommandSetBreakpoints = do
   SetBreakpointsArguments {..} <- getArguments
   maybeSourceRef <- getValidSourceRefFromSource setBreakpointsArgumentsSource
 
-  -- the input SourceRef might be a remain of a previous DAP session, update it wit the new valid one
+  -- the input SourceRef might be a remain of a previous DAP session, update it with the new valid one
   let refUpdatedSource = setBreakpointsArgumentsSource { sourceSourceReference = maybeSourceRef }
 
   clearBreakpoints
-  case (setBreakpointsArgumentsBreakpoints, maybeSourceRef) of
-    (Just sourceBreakpoints, Just sourceRef) -> do
-      (_sourceCodeText, locations) <- getSourceFromFullPak sourceRef
+  {-
+    supports placing breakpoint on:
+      - Haskell
+      - ExtStg
+  -}
+  ESTG {..} <- getDebugSession
+  case (setBreakpointsArgumentsBreakpoints, maybeSourceRef, maybeSourceRef >>= flip Bimap.lookupR dapSourceRefMap) of
+    -- HINT: breakpoint on Haskell
+    (Just sourceBreakpoints, Just sourceRef, Just (SourceRef_SourceFileInFullpak hsCodeDesc@(Haskell pkg mod)))
+      | Just extStgSourceRef <- Bimap.lookup (SourceRef_SourceFileInFullpak $ ExtStg pkg mod) dapSourceRefMap
+      , Just hsSourceFilePath <- Bimap.lookupR hsCodeDesc haskellSrcPathMap
+      -> do
+      (_sourceCodeText, _locations, hsSrcLocs) <- getSourceFromFullPak extStgSourceRef
+      breakpoints <- forM sourceBreakpoints $ \SourceBreakpoint{..} -> do
+        -- filter all relevant ranges
+        {-
+          SP_RhsClosureExpr
+        -}
+        let onlySupported = \case
+              SP_RhsClosureExpr{} -> True
+              _ -> True -- TODO
+        let relevantLocations = filter (onlySupported . fst . fst) $ case sourceBreakpointColumn of
+              Nothing ->
+                [ (p, (srcSpanELine - srcSpanSLine, maxBound))
+                | p@(_,SourceNote RealSrcSpan'{..} _) <- hsSrcLocs
+                , srcSpanFile == hsSourceFilePath
+                , srcSpanSLine <= sourceBreakpointLine
+                , srcSpanELine >= sourceBreakpointLine
+                ]
+              Just col  ->
+                [ (p, (srcSpanELine - srcSpanSLine, srcSpanECol - srcSpanSCol))
+                | p@(_,SourceNote RealSrcSpan'{..} _) <- hsSrcLocs
+                , srcSpanFile == hsSourceFilePath
+                , srcSpanSLine <= sourceBreakpointLine
+                , srcSpanELine >= sourceBreakpointLine
+                , srcSpanSCol <= col
+                , srcSpanECol >= col
+                ]
+        liftIO $ putStrLn . unlines $ "relevant haskell locations:" : map show relevantLocations
+        -- use the first location found
+        case map fst . take 1 $ sortOn snd relevantLocations of
+          (stgPoint@(SP_RhsClosureExpr closureName), SourceNote RealSrcSpan'{..} _) : _ -> do
+            let hitCount = fromMaybe 0 (sourceBreakpointHitCondition >>= readMaybe . T.unpack) :: Int
+            sendAndWait (CmdAddBreakpoint (BkpStgPoint stgPoint) hitCount)
+            bkpId <- addNewBreakpoint $ BkpStgPoint stgPoint
+            pure $ defaultBreakpoint
+              { breakpointVerified  = True
+              , breakpointSource    = Just refUpdatedSource
+              , breakpointLine      = Just srcSpanSLine
+              , breakpointColumn    = Just srcSpanSCol
+              , breakpointEndLine   = Just srcSpanELine
+              , breakpointEndColumn = Just srcSpanECol
+              , breakpointId        = Just bkpId
+              }
+          _ ->
+            pure $ defaultBreakpoint
+              { breakpointVerified  = False
+              , breakpointSource    = Just refUpdatedSource
+              , breakpointMessage   = Just "no hs code found"
+              }
+      sendSetBreakpointsResponse breakpoints
+
+    -- HINT: breakpoint on ExtStg
+    (Just sourceBreakpoints, Just sourceRef, Just (SourceRef_SourceFileInFullpak ExtStg{})) -> do
+      (_sourceCodeText, locations, _hsSrcLocs) <- getSourceFromFullPak sourceRef
       breakpoints <- forM sourceBreakpoints $ \SourceBreakpoint{..} -> do
         -- filter all relevant ranges
         {-
@@ -457,7 +522,7 @@ talk CommandSource = do
       Just source -> getValidSourceRefFromSource source
       Nothing     -> pure Nothing
 
-  (source, _locations) <- getSourceFromFullPak sourceRef
+  (source, _locations, _hsSrcLocs) <- getSourceFromFullPak sourceRef
   sendSourceResponse (SourceResponse source Nothing)
 ----------------------------------------------------------------------------
 talk CommandThreads = do
@@ -530,20 +595,43 @@ getSourceAndPositionForStgPoint :: Id -> StgPoint -> Adaptor ESTG (Maybe Source,
 getSourceAndPositionForStgPoint (Id Binder{..}) stgPoint = do
   ESTG {..} <- getDebugSession
   let Just packageName = Bimap.lookup binderUnitId unitIdMap
-  source <- getSourceFromSourceRefDescriptor $ SourceRef_SourceFileInFullpak $ ExtStg packageName (cs $ getModuleName binderModule)
+      moduleName = cs $ getModuleName binderModule
+  source <- getSourceFromSourceRefDescriptor $ SourceRef_SourceFileInFullpak $ ExtStg packageName moduleName
   let Just sourceRef = sourceSourceReference source
-  (_sourceCodeText, locations) <- getSourceFromFullPak sourceRef
-  case filter ((== stgPoint) . fst) locations of
-    (_, ((line, column),(endLine, endColumn))) : _ -> do
-      pure (Just source, line, column, endLine, endColumn)
+  (_sourceCodeText, locations, hsSrcLocs) <- getSourceFromFullPak sourceRef
+  let inModule pkg mod (_, SourceNote{..})
+        | RealSrcSpan'{..} <- sourceSpan
+        , Just hsSrcDesc <- Bimap.lookup srcSpanFile haskellSrcPathMap
+        = hsSrcDesc == Haskell pkg mod
+      inModule _ _ _ = False
+
+      stgPointLocs  = filter ((== stgPoint) . fst) hsSrcLocs
+      hsModLocs     = filter (inModule packageName moduleName) stgPointLocs
+  forM_ stgPointLocs $ \(_, tickish) -> liftIO $ print tickish
+  {-
+    source location priorities:
+      - haskell module local
+      - stg
+  -}
+  case hsModLocs of
+    (_, SourceNote{..}) : _
+      | RealSrcSpan'{..} <- sourceSpan
+      , Just hsSrcDesc <- Bimap.lookup srcSpanFile haskellSrcPathMap
+      -> do
+      sourceHs <- getSourceFromSourceRefDescriptor $ SourceRef_SourceFileInFullpak hsSrcDesc
+      pure (Just sourceHs, srcSpanSLine, srcSpanSCol, srcSpanELine, srcSpanECol)
     _ -> do
-      pure (Just source, 0, 0, 0, 0)
+      case filter ((== stgPoint) . fst) locations of
+        (_, ((line, column),(endLine, endColumn))) : _ -> do
+          pure (Just source, line, column, endLine, endColumn)
+        _ -> do
+          pure (Just source, 0, 0, 0, 0)
 
 ----------------------------------------------------------------------------
 
 ----------------------------------------------------------------------------
 -- | Retrieves list of modules from .fullpak file
-getSourceCodeListFromFullPak :: FilePath -> IO ([SourceCodeDescriptor], Bimap UnitId PackageName)
+getSourceCodeListFromFullPak :: FilePath -> IO ([SourceCodeDescriptor], Bimap UnitId PackageName, Bimap Name SourceCodeDescriptor)
 getSourceCodeListFromFullPak fullPakPath = do
   rawEntries <- fmap unEntrySelector . M.keys <$> withArchive fullPakPath getEntries
   let folderNames = Set.fromList (takeDirectory <$> rawEntries)
@@ -555,12 +643,12 @@ getSourceCodeListFromFullPak fullPakPath = do
         | CodeInfo{..} <- aiLiveCode
         ]
   {-
-    content:
+    program source content:
       haskell modules
       foreign files
   -}
   let rawEntriesSet = Set.fromList rawEntries
-      moduleCode pkg mod =
+      moduleCodeItems pkg mod =
         [ Haskell   pkg mod
         , GhcCore   pkg mod
         , GhcStg    pkg mod
@@ -569,12 +657,13 @@ getSourceCodeListFromFullPak fullPakPath = do
         , ExtStg    pkg mod
         , FFICStub  pkg mod
         , FFIHStub  pkg mod
+        , ModInfo   pkg mod
         ]
       haskellModuleCode :: [SourceCodeDescriptor]
       haskellModuleCode =
         [ srcDesc
         | CodeInfo{..} <- aiLiveCode
-        , srcDesc <- moduleCode (cs ciPackageName) (cs ciModuleName)
+        , srcDesc <- moduleCodeItems (cs ciPackageName) (cs ciModuleName)
         , Set.member (getSourcePath srcDesc) rawEntriesSet
         ]
 
@@ -586,7 +675,14 @@ getSourceCodeListFromFullPak fullPakPath = do
         , Just packageName <- [Bimap.lookup (UnitId $ cs unitIdString) unitIdMap]
         ]
 
-  pure (haskellModuleCode ++ cbitsSources, unitIdMap)
+  hsPathList <- forM aiLiveCode $ \CodeInfo{..} -> do
+    let extStgPath = getSourcePath $ ExtStg (cs ciPackageName) (cs ciModuleName)
+    (_phase, _unitId, _modName, mSrcFilePath, _stubs, _hasForeignExport, _deps) <- readModpakL fullPakPath extStgPath decodeStgbinInfo
+    case mSrcFilePath of
+      Nothing -> pure []
+      Just p  -> pure [(cs p, Haskell (cs ciPackageName) (cs ciModuleName))]
+  let hsPathMap = Bimap.fromList $ concat hsPathList
+  pure (haskellModuleCode ++ cbitsSources, unitIdMap, hsPathMap)
 
 getValidSourceRefFromSource :: Source -> Adaptor ESTG (Maybe Int)
 getValidSourceRefFromSource Source{..} = do
@@ -611,7 +707,7 @@ getValidSourceRefFromSource Source{..} = do
 
 ----------------------------------------------------------------------------
 -- | Retrieves list of modules from .fullpak file
-getSourceFromFullPak :: SourceId -> Adaptor ESTG (Text, [(StgPoint, SrcRange)])
+getSourceFromFullPak :: SourceId -> Adaptor ESTG (Text, [(StgPoint, SrcRange)], [(StgPoint, Tickish)])
 getSourceFromFullPak sourceId = do
   ESTG {..} <- getDebugSession
   SourceRef_SourceFileInFullpak srcDesc <- case Bimap.lookupR sourceId dapSourceRefMap of
@@ -623,10 +719,12 @@ getSourceFromFullPak sourceId = do
     case srcDesc of
       ExtStg{} -> do
         m <- readModpakL fullPakPath sourcePath decodeStgbin
-        pure . pShow $ pprModule m
+        let (stgCode, stgLocs)  = pShowWithConfig Config {cfgPrintTickish = True} $ pprModule m
+            tickishList         = collectTickish m
+        pure (stgCode, stgLocs, tickishList)
       _ -> do
         ir <- readModpakS fullPakPath sourcePath T.decodeUtf8
-        pure (ir, [])
+        pure (ir, [], [])
 ----------------------------------------------------------------------------
 -- | Synchronous call to Debugger, sends message and waits for response
 sendAndWait :: DebugCommand -> Adaptor ESTG DebugOutput
@@ -1125,6 +1223,7 @@ data SourceCodeDescriptor
   | ExtStg    PackageName QualifiedModuleName
   | FFICStub  PackageName QualifiedModuleName
   | FFIHStub  PackageName QualifiedModuleName
+  | ModInfo   PackageName QualifiedModuleName
   | ForeignC  PackageName FilePath
   deriving (Show, Read, Eq, Ord)
 
@@ -1142,6 +1241,7 @@ getSourcePath = \case
   ExtStg   pkg mod -> "haskell" </> cs pkg </> cs mod </> "module.stgbin"
   FFICStub pkg mod -> "haskell" </> cs pkg </> cs mod </> "module_stub.c"
   FFIHStub pkg mod -> "haskell" </> cs pkg </> cs mod </> "module_stub.h"
+  ModInfo  pkg mod -> "haskell" </> cs pkg </> cs mod </> "module.info"
   ForeignC _pkg path -> cs path
 
 getSourceName :: SourceCodeDescriptor -> String
@@ -1154,6 +1254,7 @@ getSourceName = \case
   ExtStg   pkg mod -> cs mod <> ".stgbin.hs"
   FFICStub pkg mod -> cs mod <> "_stub.c"
   FFIHStub pkg mod -> cs mod <> "_stub.h"
+  ModInfo  pkg mod -> cs mod <> ".info"
   ForeignC _pkg path -> cs path
 
 getSourceFromSourceRefDescriptor :: DapSourceRefDescriptor -> Adaptor ESTG Source
@@ -1169,6 +1270,7 @@ getSourceFromSourceRefDescriptor sourceRefDesc@(SourceRef_SourceFileInFullpak sr
       , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ GhcStg   packageName qualModName)
       , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ Cmm      packageName qualModName)
       , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ Asm      packageName qualModName)
+      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ ModInfo  packageName qualModName)
       ] ++
       [ getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak cStub)
       | Set.member cStub srcDescSet
