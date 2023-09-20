@@ -571,7 +571,15 @@ talk CommandVariables = do
       stgState <- getStgState
       let Just ho = IntMap.lookup addr $ ssHeap stgState
       variables <- getVariablesForHeapObject stgState ho
-      sendVariablesResponse (VariablesResponse variables)
+      -- detect and annotate loops
+      let markLoop v
+            | variableVariablesReference v == 0
+            = v
+            | variableVariablesReference v > variablesArgumentsVariablesReference
+            = v
+            | otherwise
+            = v {variableName = variableName v <> " <loop>"}
+      sendVariablesResponse (VariablesResponse $ map markLoop variables)
 ----------------------------------------------------------------------------
 talk CommandNext = do
   NextArguments {..} <- getArguments
