@@ -532,7 +532,7 @@ talk CommandThreads = do
   sendThreadsResponse
     [ Thread
       { threadId    = threadId
-      , threadName  = T.pack (show threadId <> " " <> threadLabel)
+      , threadName  = T.pack ("thread id: " <> show threadId <> " " <> threadLabel)
       }
     | (threadId, threadState) <- allThreads
     , isThreadLive $ tsStatus threadState
@@ -768,7 +768,7 @@ getStgState = do
 
 ----------------------------------------------------------------------------
 mkThreadLabel :: ThreadState -> String
-mkThreadLabel = maybe "<unknown>" (BL8.unpack . BL8.fromStrict) . tsLabel
+mkThreadLabel = maybe "" (BL8.unpack . BL8.fromStrict) . tsLabel
 
 generateScopesForTopStackFrame
   :: DapFrameIdDescriptor
