@@ -308,7 +308,7 @@ talk CommandLoadedSources = do
       list only Haskell ExtStg and ForeignC files
     -}
     let shouldInclude = \case
-          ExtStg{}    -> True
+          Haskell{}   -> True
           ForeignC{}  -> True
           _           -> False
     srcSet <- getsApp sourceCodeSet
@@ -1390,12 +1390,12 @@ getSourceName = \case
 getSourceFromSourceRefDescriptor :: DapSourceRefDescriptor -> Adaptor ESTG Source
 getSourceFromSourceRefDescriptor sourceRefDesc@(SourceRef_SourceFileInFullpak srcDesc) = do
   srcDescSet <- getsApp sourceCodeSet
-  sources <- case srcDesc of
-    ExtStg packageName qualModName
+  extraSources <- case srcDesc of
+    Haskell packageName qualModName
       | cStub <- FFICStub packageName qualModName
       , hStub <- FFIHStub packageName qualModName
       -> Just <$> sequence (
-      [ getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ Haskell  packageName qualModName)
+      [ getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ ExtStg   packageName qualModName)
       , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ GhcCore  packageName qualModName)
       , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ GhcStg   packageName qualModName)
       , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ Cmm      packageName qualModName)
@@ -1419,7 +1419,7 @@ getSourceFromSourceRefDescriptor sourceRefDesc@(SourceRef_SourceFileInFullpak sr
     { sourceName            = Just $ sourceName -- used in source tree children
     , sourceSourceReference = Just sourceRef
     , sourcePath            = Just $ sourceName -- used in code tab title
-    , sourceSources         = sources
+    , sourceSources         = extraSources
       {-
         use fingerprint to identify sources between debug sessions
         this allows to set pre-existing breakpoints coming from client (e.g. VSCode)
