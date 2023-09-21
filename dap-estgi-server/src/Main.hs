@@ -144,6 +144,7 @@ data ESTG
   , sourceCodeSet     :: Set SourceCodeDescriptor
   , unitIdMap         :: Bimap UnitId PackageName
   , haskellSrcPathMap :: Bimap Name SourceCodeDescriptor
+  , dapSourceNameMap  :: Bimap Text DapSourceRefDescriptor
 
   -- application specific resource handling
 
@@ -198,7 +199,8 @@ initESTG AttachArgs {..} = do
         , sourceCodeSet         = Set.fromList sourceCodeList
         , unitIdMap             = unitIdMap
         , haskellSrcPathMap     = haskellSrcPathMap
-        , dapSourceRefMap       = Bimap.empty
+        , dapSourceNameMap      = Bimap.fromList [(cs $ getSourceName d, SourceRef_SourceFileInFullpak d) | d <- sourceCodeList]
+        , dapSourceRefMap       = Bimap.fromList $ zip (map SourceRef_SourceFileInFullpak sourceCodeList) [1..]
         , dapFrameIdMap         = Bimap.empty
         , dapVariablesRefMap    = Bimap.empty
         , dapVariablesRefStore  = mempty
@@ -441,7 +443,7 @@ talk CommandSetBreakpoints = do
               , breakpointMessage   = Just "no code found"
               }
       sendSetBreakpointsResponse breakpoints
-    _ ->
+    v -> do
       sendSetBreakpointsResponse []
 ----------------------------------------------------------------------------
 talk CommandStackTrace = do
@@ -706,14 +708,12 @@ getValidSourceRefFromSource Source{..} = do
   ESTG {..} <- getDebugSession
   {-
     fallback chain:
-      read sourceAdapterData if fullpak path matches to create SourceRef
-      use sourceSourceReference
+      1. sourcePath
+      2. sourceSourceReference
   -}
   let maybeSrcDesc = do
-        String fingerprint <- sourceAdapterData
-        (srcFullpakPath, srcDesc) <- readMaybe (cs fingerprint)
-        guard (srcFullpakPath == fullPakPath)
-        pure srcDesc
+        srcName <- sourcePath
+        Bimap.lookup srcName dapSourceNameMap
   case maybeSrcDesc of
     Just srcDesc  -> Just <$> getSourceRef srcDesc
     Nothing       -> case sourceSourceReference of
@@ -1411,8 +1411,7 @@ getSourceFromSourceRefDescriptor sourceRefDesc@(SourceRef_SourceFileInFullpak sr
 
     _ -> pure Nothing
 
-  let --sourcePath = cs $ getSourcePath srcDesc
-      sourceName = cs $ getSourceName srcDesc
+  let sourceName = cs $ getSourceName srcDesc
   sourceRef <- getSourceRef sourceRefDesc
   ESTG {..} <- getDebugSession
   pure defaultSource
@@ -1420,11 +1419,6 @@ getSourceFromSourceRefDescriptor sourceRefDesc@(SourceRef_SourceFileInFullpak sr
     , sourceSourceReference = Just sourceRef
     , sourcePath            = Just $ sourceName -- used in code tab title
     , sourceSources         = extraSources
-      {-
-        use fingerprint to identify sources between debug sessions
-        this allows to set pre-existing breakpoints coming from client (e.g. VSCode)
-      -}
-    , sourceAdapterData     = Just . String . cs $ show (fullPakPath, sourceRefDesc)
     }
 
 getFrameId :: DapFrameIdDescriptor -> Adaptor ESTG Int
@@ -1447,12 +1441,10 @@ getVariablesRef key = do
 
 getSourceRef :: DapSourceRefDescriptor -> Adaptor ESTG Int
 getSourceRef key = do
+  -- NOTE: Source code related db is populated at initialization
   getsApp (Bimap.lookup key . dapSourceRefMap) >>= \case
     Just srcRef -> pure srcRef
-    Nothing -> do
-      srcRef <- getsApp (succ . Bimap.size . dapSourceRefMap)
-      modifyApp $ \s -> s {dapSourceRefMap = Bimap.insert key srcRef (dapSourceRefMap s)}
-      pure srcRef
+    Nothing     -> error $ "unknown source descriptor: " ++ show key
 
 setVariables :: Int -> [Variable] -> Adaptor ESTG ()
 setVariables variablesRef variableList = do
