@@ -15,7 +15,7 @@ extra-deps:
     commit: 1f8ed2f97e9d41f037274791d66f1e0984c1ed17
 
   - git: https://github.com/grin-compiler/ghc-whole-program-compiler-project
-    commit: 80e408ebdeaf5c1cea72bfbf86823c32d4fdafbe
+    commit: 81c142ab40c6757904d873d4dd1db4a7786b186c
     subdirs:
       - external-stg
       - external-stg-syntax
