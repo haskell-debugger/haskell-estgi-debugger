@@ -355,23 +355,26 @@ talk CommandSetBreakpoints = do
               _ -> True -- TODO
         let relevantLocations = filter (onlySupported . fst . fst) $ case sourceBreakpointColumn of
               Nothing ->
-                [ (p, (srcSpanELine - srcSpanSLine, maxBound))
+                [ (p, spanSize)
                 | p@(_,SourceNote RealSrcSpan'{..} _) <- hsSrcLocs
                 , srcSpanFile == hsSourceFilePath
                 , srcSpanSLine <= sourceBreakpointLine
                 , srcSpanELine >= sourceBreakpointLine
+                , let spanSize = (srcSpanELine - srcSpanSLine, srcSpanECol - srcSpanSCol)
                 ]
               Just col  ->
-                [ (p, (srcSpanELine - srcSpanSLine, srcSpanECol - srcSpanSCol))
+                [ (p, spanSize)
                 | p@(_,SourceNote RealSrcSpan'{..} _) <- hsSrcLocs
                 , srcSpanFile == hsSourceFilePath
                 , srcSpanSLine <= sourceBreakpointLine
                 , srcSpanELine >= sourceBreakpointLine
                 , srcSpanSCol <= col
                 , srcSpanECol >= col
+                , let spanSize = (srcSpanELine - srcSpanSLine, srcSpanECol - srcSpanSCol)
                 ]
-        liftIO $ putStrLn . unlines $ "relevant haskell locations:" : map show relevantLocations
+        debugMessage . cs . unlines $ "relevant haskell locations:" : map show relevantLocations
         -- use the first location found
+        -- HINT: locations are sorted according the span size, small spans are preferred more
         case map fst . take 1 $ sortOn snd relevantLocations of
           (stgPoint@(SP_RhsClosureExpr closureName), SourceNote RealSrcSpan'{..} _) : _ -> do
             let hitCount = fromMaybe 0 (sourceBreakpointHitCondition >>= readMaybe . T.unpack) :: Int
@@ -420,7 +423,7 @@ talk CommandSetBreakpoints = do
                 , startCol <= col
                 , endCol >= col
                 ]
-        liftIO $ putStrLn $ "relevantLocations: " ++ show relevantLocations
+        debugMessage . cs $ "relevantLocations: " ++ show relevantLocations
         -- use the first location found
         case sortOn snd relevantLocations of
           (stgPoint@(SP_RhsClosureExpr closureName), ((startRow, startCol), (endRow, endCol))) : _ -> do
@@ -571,7 +574,9 @@ talk CommandVariables = do
       sendVariablesResponse (VariablesResponse variables)
     Just (VariablesRef_HeapObject addr) -> do
       stgState <- getStgState
-      let Just ho = IntMap.lookup addr $ ssHeap stgState
+      ho <- case IntMap.lookup addr $ ssHeap stgState of
+        Nothing -> sendError (ErrorMessage (T.pack $ "Unknown heap object: " ++ show addr)) Nothing
+        Just v  -> pure v
       variables <- getVariablesForHeapObject stgState ho
       -- detect and annotate loops
       let markLoop v
@@ -580,7 +585,7 @@ talk CommandVariables = do
             | variableVariablesReference v > variablesArgumentsVariablesReference
             = v
             | otherwise
-            = v {variableName = variableName v <> " <loop>"}
+            = v {variableName = variableName v <> " <also-shown-in-ancestor>"}
       sendVariablesResponse (VariablesResponse $ map markLoop variables)
 ----------------------------------------------------------------------------
 talk CommandNext = do
@@ -613,8 +618,10 @@ talk cmd = logInfo $ BL8.pack ("GOT cmd " <> show cmd)
 getSourceAndPositionForStgPoint :: Id -> StgPoint -> Adaptor ESTG (Maybe Source, Int, Int, Int, Int)
 getSourceAndPositionForStgPoint (Id Binder{..}) stgPoint = do
   ESTG {..} <- getDebugSession
-  let Just packageName = Bimap.lookup binderUnitId unitIdMap
-      moduleName = cs $ getModuleName binderModule
+  packageName <- case Bimap.lookup binderUnitId unitIdMap of
+    Nothing -> sendError (ErrorMessage (T.pack $ "Unknown unit id: " ++ show binderUnitId)) Nothing
+    Just v  -> pure v
+  let moduleName = cs $ getModuleName binderModule
   source <- getSourceFromSourceRefDescriptor $ SourceRef_SourceFileInFullpak $ ExtStg packageName moduleName
   let Just sourceRef = sourceSourceReference source
   (_sourceCodeText, locations, hsSrcLocs) <- getSourceFromFullPak sourceRef
