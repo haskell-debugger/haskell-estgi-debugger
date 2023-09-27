@@ -39,6 +39,7 @@ import           Control.Monad.State.Strict            ( gets )
 import           Control.Monad
 import           Control.Monad.State.Strict            ( gets )
 import           Data.Aeson                            ( Value(Null), FromJSON )
+import qualified Data.Aeson                            as Aeson
 import           Data.IntMap.Strict                    ( IntMap )
 import qualified Data.IntMap.Strict                    as IntMap
 import           Data.Bimap                            ( Bimap )
@@ -50,7 +51,7 @@ import           Data.Text                             ( Text )
 import qualified Data.Text                             as T
 import qualified Data.Text.Lazy                        as LazyText
 import           Data.Typeable                         ( typeOf )
-import           Data.Maybe                            ( fromMaybe )
+import           Data.Maybe                            ( fromMaybe, maybeToList )
 import           Data.List                             ( sortOn )
 import           GHC.Generics                          ( Generic )
 import           System.Environment                    ( lookupEnv )
@@ -79,6 +80,8 @@ import           Data.Yaml                             hiding (Array)
 import qualified Text.Pretty.Simple                    as PP
 ----------------------------------------------------------------------------
 import           DAP                                   hiding (send)
+----------------------------------------------------------------------------
+import           CustomCommands
 ----------------------------------------------------------------------------
 -- | DAP entry point
 -- Extracts configuration information from the environment
@@ -315,6 +318,47 @@ talk CommandLoadedSources = do
           _           -> False
     srcSet <- getsApp sourceCodeSet
     mapM (getSourceFromSourceRefDescriptor . SourceRef_SourceFileInFullpak) $ filter shouldInclude $ Set.toList srcSet
+
+----------------------------------------------------------------------------
+talk (CustomCommand "getSourceLinks") = do
+  GetSourceLinksArguments {..} <- getArguments
+  ESTG {..} <- getDebugSession
+  sourceLinks <- case Bimap.lookup getSourceLinksArgumentsPath dapSourceNameMap of
+    Just srcDesc@(SourceRef_SourceFileInFullpak ExtStg{}) -> do
+      source <- getSourceFromSourceRefDescriptor srcDesc
+      let Just sourceRef = sourceSourceReference source
+      (_sourceCodeText, locations, hsSrcLocs) <- getSourceFromFullPak sourceRef
+      let hsTickishLocMap = M.unionsWith mappend [M.singleton stgPoint [tickish] | (stgPoint, tickish) <- hsSrcLocs]
+          -- collect tickish locations
+          estgLocMap = M.unionsWith mappend
+            [ M.singleton stgPoint [range]
+            | (SP_Tickish stgPoint, range) <- locations
+            ]
+      liftIO $ do
+        print hsTickishLocMap
+        print estgLocMap
+      pure $
+        [ SourceLink
+          { sourceLinkSourceLine        = estgStartLine
+          , sourceLinkSourceColumn      = estgStartCol
+          , sourceLinkSourceEndLine     = estgEndLine
+          , sourceLinkSourceEndColumn   = estgEndCol
+          , sourceLinkTargetLine        = srcSpanSLine
+          , sourceLinkTargetColumn      = srcSpanSCol
+          , sourceLinkTargetEndLine     = srcSpanELine
+          , sourceLinkTargetEndColumn   = srcSpanECol
+          , sourceLinkTargetPath        = cs $ getSourceName hsCodeDesc
+          }
+        | (stgPoint, hsTickishList) <- M.toList hsTickishLocMap
+        , estgLocList <- maybeToList $ M.lookup stgPoint estgLocMap
+        , (((estgStartLine, estgStartCol),(estgEndLine, estgEndCol)), SourceNote{..}) <- zip estgLocList hsTickishList
+        , let RealSrcSpan'{..} = sourceSpan
+        , hsCodeDesc <- maybeToList $ Bimap.lookup srcSpanFile haskellSrcPathMap
+        ]
+    _ -> pure []
+  sendSuccesfulResponse . setBody $ GetSourceLinksResponse
+    { getSourceLinksResponseSourceLinks = sourceLinks
+    }
 
 ----------------------------------------------------------------------------
 talk CommandModules = do
@@ -572,12 +616,12 @@ talk CommandVariables = do
     Just VariablesRef_StackFrameVariables{} -> do
       variables <- getVariables variablesArgumentsVariablesReference
       sendVariablesResponse (VariablesResponse variables)
-    Just (VariablesRef_HeapObject addr) -> do
+    Just (VariablesRef_HeapObject frameIdDesc addr) -> do
       stgState <- getStgState
       ho <- case IntMap.lookup addr $ ssHeap stgState of
         Nothing -> sendError (ErrorMessage (T.pack $ "Unknown heap object: " ++ show addr)) Nothing
         Just v  -> pure v
-      variables <- getVariablesForHeapObject stgState ho
+      variables <- getVariablesForHeapObject stgState frameIdDesc ho
       -- detect and annotate loops
       let markLoop v
             | variableVariablesReference v == 0
@@ -587,6 +631,8 @@ talk CommandVariables = do
             | otherwise
             = v {variableName = variableName v <> " <also-shown-in-ancestor>"}
       sendVariablesResponse (VariablesResponse $ map markLoop variables)
+    Nothing -> do
+      sendVariablesResponse (VariablesResponse [])
 ----------------------------------------------------------------------------
 talk CommandNext = do
   NextArguments {..} <- getArguments
@@ -789,12 +835,12 @@ generateScopesForTopStackFrame frameIdDesc closureId env = do
   varList <- forM (M.toList env) $ \(Id (Binder{..}), (_, atom)) -> do
     let BinderId u = binderId
         displayName = if binderScope == ModulePublic then cs binderName else cs (show u)
-    (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState atom
+    (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState frameIdDesc atom
     pure defaultVariable
       { variableName  = displayName
       , variableValue = cs variableValue
       , variableType  = Just (cs variableType)
-      , variableEvaluateName = Just $ displayName <> " evaluate"
+      -- , variableEvaluateName = Just $ displayName <> " evaluate"
       , variableVariablesReference = varsRef
       }
   setVariables scopeVarablesRef varList
@@ -821,10 +867,27 @@ getHeapObjectSummary = \case
   ApStack{} -> "ApStack"
   RaiseException{} -> "RaiseException"
 
-getVariablesForHeapObject :: StgState -> HeapObject -> Adaptor ESTG [Variable]
-getVariablesForHeapObject stgState = \case
+getStgSourceLocJSON :: Id -> Adaptor ESTG (Maybe Text)
+getStgSourceLocJSON i = do
+  (mSource, startL, startC, endL, endC) <- getSourceAndPositionForStgPoint i (SP_Binding i)
+  let mkPosObject line column = Aeson.object
+        [ ("line",    Aeson.Number $ fromIntegral line)
+        , ("column",  Aeson.Number $ fromIntegral column)
+        ]
+      srcLocJson = do
+        Source{..} <- mSource
+        path <- sourcePath
+        pure . cs . Aeson.encode $ Aeson.object
+          [ ("path",  Aeson.String path)
+          , ("start", mkPosObject startL startC)
+          , ("end",   mkPosObject endL endC)
+          ]
+  pure srcLocJson
+
+getVariablesForHeapObject :: StgState -> DapFrameIdDescriptor -> HeapObject -> Adaptor ESTG [Variable]
+getVariablesForHeapObject stgState frameIdDesc = \case
   Con{..} -> forM (zip [0..] hoConArgs) $ \(idx, atom) -> do
-    (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState atom
+    (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState frameIdDesc atom
     pure defaultVariable
       { variableName = cs $ "arg" ++ show idx
       , variableValue = cs variableValue
@@ -832,9 +895,11 @@ getVariablesForHeapObject stgState = \case
       , variableVariablesReference = varsRef
       }
   Closure{..} -> do
+    srcLocJson <- getStgSourceLocJSON hoName
     let bodyVar = defaultVariable
           { variableName = "code"
           , variableValue = cs $ show hoName
+          , variableEvaluateName = srcLocJson
           }
     {-
       TODO:
@@ -843,7 +908,7 @@ getVariablesForHeapObject stgState = \case
         show missing-args-count / is thunk?
     -}
     argVarList <- forM (zip [0..] hoCloArgs) $ \(idx, atom) -> do
-      (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState atom
+      (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState frameIdDesc atom
       pure defaultVariable
         { variableName = cs $ "arg" ++ show idx
         , variableValue = cs variableValue
@@ -851,19 +916,28 @@ getVariablesForHeapObject stgState = \case
         , variableVariablesReference = varsRef
         }
     envVarList <- forM (M.toList hoEnv) $ \(Id (Binder{..}), (_, atom)) -> do
-      (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState atom
+      (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState frameIdDesc atom
       let BinderId u = binderId
           displayName = if binderScope == ModulePublic then cs binderName else cs (show u)
       pure defaultVariable
         { variableName  = displayName
         , variableValue = cs variableValue
         , variableType  = Just (cs variableType)
-        , variableEvaluateName = Just $ displayName <> " evaluate"
+        -- , variableEvaluateName = Just $ displayName <> " evaluate"
         , variableVariablesReference = varsRef
         }
     pure $ bodyVar : argVarList ++ envVarList
   BlackHole{..} -> do
-    (ownerVarType, ownerVarValue, ownerVarsRef) <- getAtomTypeAndValueM stgState $ ThreadId hoBHOwnerThreadId
+    (ownerVarType, ownerVarValue, ownerVarsRef) <- getAtomTypeAndValueM stgState frameIdDesc $ ThreadId hoBHOwnerThreadId
+    bodyVar <- case hoBHOriginalThunk of
+      Closure{..} -> do
+        srcLocJson <- getStgSourceLocJSON hoName
+        pure . pure $ defaultVariable
+          { variableName = "code"
+          , variableValue = cs $ show hoName
+          , variableEvaluateName = cs <$> srcLocJson
+          }
+      _ -> pure []
     let onwerVar = defaultVariable
           { variableName = "owner thread id"
           , variableValue = cs ownerVarValue
@@ -872,17 +946,17 @@ getVariablesForHeapObject stgState = \case
           }
 
     queueVarList <- forM hoBHWaitQueue $ \tid -> do
-      (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState $ ThreadId tid
+      (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState frameIdDesc $ ThreadId tid
       pure defaultVariable
         { variableName = "waiting thread id"
         , variableValue = cs variableValue
         , variableType = Just (cs variableType)
         , variableVariablesReference = varsRef
         }
-    pure $ onwerVar : queueVarList
+    pure $ bodyVar ++ onwerVar : queueVarList
   ApStack{..} -> do
     resultVarList <- forM hoResult $ \atom -> do
-      (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState atom
+      (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState frameIdDesc atom
       pure defaultVariable
         { variableName = "latest result"
         , variableValue = cs variableValue
@@ -892,7 +966,7 @@ getVariablesForHeapObject stgState = \case
       -- TODO: hoStack
     pure resultVarList
   RaiseException ex -> do
-    (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState ex
+    (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState frameIdDesc ex
     pure $ pure defaultVariable
       { variableName = "exception"
       , variableValue = cs variableValue
@@ -914,14 +988,14 @@ generateScopes frameIdDesc stackCont@(CaseOf _ closureId env _ _ _) = do
   varList <- forM (M.toList env) $ \(Id (Binder{..}), (_, atom)) -> do
     -- DMJ: for now everything is local.
     -- Inspect StaticOrigin to put things top-level, or as arguments, where applicable
-    (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState atom
+    (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState frameIdDesc atom
     let BinderId u = binderId
         displayName = if binderScope == ModulePublic then cs binderName else cs (show u)
     pure defaultVariable
       { variableName  = displayName
       , variableValue = cs variableValue
       , variableType  = Just (cs variableType)
-      , variableEvaluateName = Just $ displayName <> " evaluate"
+      -- , variableEvaluateName = Just $ displayName <> " evaluate"
       , variableVariablesReference = varsRef
       }
   setVariables scopeVarablesRef varList
@@ -940,7 +1014,7 @@ generateScopes frameIdDesc stackCont@(CaseOf _ closureId env _ _ _) = do
 generateScopes frameIdDesc stackCont@(Update addr) = do
   scopeVarablesRef <- getVariablesRef $ VariablesRef_StackFrameVariables frameIdDesc
   stgState <- getStgState
-  (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState $ HeapPtr addr
+  (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState frameIdDesc $ HeapPtr addr
   setVariables scopeVarablesRef
     [ defaultVariable
       { variableName = "Thunk Address"
@@ -960,7 +1034,7 @@ generateScopes frameIdDesc stackCont@(Apply atoms) = do
   scopeVarablesRef <- getVariablesRef $ VariablesRef_StackFrameVariables frameIdDesc
   stgState <- getStgState
   varList <- forM atoms $ \atom -> do
-    (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState atom
+    (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState frameIdDesc atom
     pure defaultVariable
       { variableName = "Closure argument"
       , variableValue = cs variableValue
@@ -978,7 +1052,7 @@ generateScopes frameIdDesc stackCont@(Apply atoms) = do
 generateScopes frameIdDesc stackCont@(Catch atom blockAsync interruptible) = do
   scopeVarablesRef <- getVariablesRef $ VariablesRef_StackFrameVariables frameIdDesc
   stgState <- getStgState
-  (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState atom
+  (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState frameIdDesc atom
   setVariables scopeVarablesRef
     [ defaultVariable
       { variableName = "Exception Handler"
@@ -1050,7 +1124,7 @@ generateScopes frameIdDesc stackCont@(RunScheduler reason) = do
 generateScopes frameIdDesc stackCont@(Atomically atom) = do
   scopeVarablesRef <- getVariablesRef $ VariablesRef_StackFrameVariables frameIdDesc
   stgState <- getStgState
-  (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState atom
+  (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState frameIdDesc atom
   setVariables scopeVarablesRef
     [ defaultVariable
       { variableName = "STM action"
@@ -1069,8 +1143,8 @@ generateScopes frameIdDesc stackCont@(Atomically atom) = do
 generateScopes frameIdDesc stackCont@(CatchRetry primaryAction alternativeAction isRunningAlternative _tlog) = do
   scopeVarablesRef <- getVariablesRef $ VariablesRef_StackFrameVariables frameIdDesc
   stgState <- getStgState
-  (variableType1, variableValue1, varsRef1) <- getAtomTypeAndValueM stgState primaryAction
-  (variableType2, variableValue2, varsRef2) <- getAtomTypeAndValueM stgState alternativeAction
+  (variableType1, variableValue1, varsRef1) <- getAtomTypeAndValueM stgState frameIdDesc primaryAction
+  (variableType2, variableValue2, varsRef2) <- getAtomTypeAndValueM stgState frameIdDesc alternativeAction
   setVariables scopeVarablesRef
     [ defaultVariable
       { variableName = "First STM action"
@@ -1101,8 +1175,8 @@ generateScopes frameIdDesc stackCont@(CatchRetry primaryAction alternativeAction
 generateScopes frameIdDesc (CatchSTM action handler) = do
   scopeVarablesRef <- getVariablesRef $ VariablesRef_StackFrameVariables frameIdDesc
   stgState <- getStgState
-  (variableType1, variableValue1, varsRef1) <- getAtomTypeAndValueM stgState action
-  (variableType2, variableValue2, varsRef2) <- getAtomTypeAndValueM stgState handler
+  (variableType1, variableValue1, varsRef1) <- getAtomTypeAndValueM stgState frameIdDesc action
+  (variableType2, variableValue2, varsRef2) <- getAtomTypeAndValueM stgState frameIdDesc handler
   setVariables scopeVarablesRef
     [ defaultVariable
       { variableName = "STM action"
@@ -1136,7 +1210,7 @@ generateScopes frameIdDesc stackCont@DataToTagOp = do
 generateScopes frameIdDesc stackCont@(RaiseOp atom) = do
   scopeVarablesRef <- getVariablesRef $ VariablesRef_StackFrameVariables frameIdDesc
   stgState <- getStgState
-  (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState atom
+  (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState frameIdDesc atom
   setVariables scopeVarablesRef
     [ defaultVariable
       { variableName = "RaiseOp"
@@ -1155,7 +1229,7 @@ generateScopes frameIdDesc stackCont@(RaiseOp atom) = do
 generateScopes frameIdDesc stackCont@(KeepAlive atom) = do
   scopeVarablesRef <- getVariablesRef $ VariablesRef_StackFrameVariables frameIdDesc
   stgState <- getStgState
-  (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState atom
+  (variableType, variableValue, varsRef) <- getAtomTypeAndValueM stgState frameIdDesc atom
   setVariables scopeVarablesRef
     [ defaultVariable
       { variableName = "Managed Object"
@@ -1233,13 +1307,14 @@ showPrimRep rep = show rep
 
 getAtomTypeAndValueM
   :: StgState
+  -> DapFrameIdDescriptor
   -> Atom
   -> Adaptor ESTG (String, String, Int)
-getAtomTypeAndValueM ss@StgState{..} = \case
+getAtomTypeAndValueM ss@StgState{..} frameIdDesc = \case
   HeapPtr addr
     | Just o <- IntMap.lookup addr ssHeap
     -> do
-      varsRef <- getVariablesRef $ VariablesRef_HeapObject addr
+      varsRef <- getVariablesRef $ VariablesRef_HeapObject frameIdDesc addr
       pure ("HeapPtr", show addr ++ " " ++ getHeapObjectSummary o ++ "\n --- \n" ++ LazyText.unpack (PP.pShowNoColor o), varsRef)
   atom
     | (t, v) <- getAtomTypeAndValue ss atom
@@ -1348,7 +1423,7 @@ data DapFrameIdDescriptor
 
 data DapVariablesRefDescriptor
   = VariablesRef_StackFrameVariables  DapFrameIdDescriptor
-  | VariablesRef_HeapObject           Int
+  | VariablesRef_HeapObject           DapFrameIdDescriptor Int
   deriving (Show, Eq, Ord)
 
 data SourceCodeDescriptor
