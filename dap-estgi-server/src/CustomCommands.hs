@@ -41,3 +41,14 @@ data SourceLink
 ----------------------------------------------------------------------------
 instance ToJSON SourceLink where
   toJSON = genericToJSONWithModifier
+
+----------------------------------------------------------------------------
+data ShowVariableGraphStructureArguments
+  = ShowVariableGraphStructureArguments
+  { showVariableGraphStructureArgumentsVariablesReference :: Int
+  } deriving stock (Show, Eq, Generic)
+
+instance FromJSON ShowVariableGraphStructureArguments where
+  parseJSON = genericParseJSONWithModifier
+
+----------------------------------------------------------------------------
