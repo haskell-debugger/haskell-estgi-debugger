@@ -46,7 +46,7 @@ getSourceAndPositionForStgPoint stgPoint = do
     Nothing -> sendError (ErrorMessage (T.pack $ "Unknown unit id: " ++ show unitId)) Nothing
     Just v  -> pure v
   let moduleName = cs $ getModuleName moduleNameBS
-  source <- getSourceFromSourceRefDescriptor $ SourceRef_SourceFileInFullpak $ ExtStg packageName moduleName
+  source <- getSourceFromSourceCodeDescriptor $ ExtStg packageName moduleName
   let Just sourceRef = sourceSourceReference source
   (_sourceCodeText, locations, hsSrcLocs) <- getSourceFromFullPak sourceRef
   let inModule pkg mod (_, SourceNote{..})
@@ -68,7 +68,7 @@ getSourceAndPositionForStgPoint stgPoint = do
       | RealSrcSpan'{..} <- sourceSpan
       , Just hsSrcDesc <- Bimap.lookup srcSpanFile haskellSrcPathMap
       -> do
-      sourceHs <- getSourceFromSourceRefDescriptor $ SourceRef_SourceFileInFullpak hsSrcDesc
+      sourceHs <- getSourceFromSourceCodeDescriptor hsSrcDesc
       pure (Just sourceHs, srcSpanSLine, srcSpanSCol, srcSpanELine, srcSpanECol)
     _ -> do
       case filter ((== stgPoint) . fst) locations of
@@ -102,8 +102,8 @@ customCommandGetSourceLinks = do
   GetSourceLinksArguments {..} <- getArguments
   ESTG {..} <- getDebugSession
   sourceLinks <- case Bimap.lookup getSourceLinksArgumentsPath dapSourceNameMap of
-    Just srcDesc@(SourceRef_SourceFileInFullpak ExtStg{}) -> do
-      source <- getSourceFromSourceRefDescriptor srcDesc
+    Just srcDesc@ExtStg{} -> do
+      source <- getSourceFromSourceCodeDescriptor srcDesc
       let Just sourceRef = sourceSourceReference source
       (_sourceCodeText, locations, hsSrcLocs) <- getSourceFromFullPak sourceRef
       let hsTickishLocMap = Map.unionsWith mappend [Map.singleton stgPoint [tickish] | (stgPoint, tickish) <- hsSrcLocs]

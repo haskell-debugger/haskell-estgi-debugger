@@ -103,10 +103,6 @@ data SourceCodeDescriptor
   | ForeignC  PackageName FilePath
   deriving (Show, Read, Eq, Ord)
 
-data DapSourceRefDescriptor
-  = SourceRef_SourceFileInFullpak SourceCodeDescriptor
-  deriving (Show, Read, Eq, Ord)
-
 ----------------------------------------------------------------------------
 -- | External STG Interpreter application internal state
 data ESTG
@@ -117,11 +113,11 @@ data ESTG
   , sourceCodeSet     :: Set SourceCodeDescriptor
   , unitIdMap         :: Bimap UnitId PackageName
   , haskellSrcPathMap :: Bimap Name SourceCodeDescriptor
-  , dapSourceNameMap  :: Bimap Text DapSourceRefDescriptor
+  , dapSourceNameMap  :: Bimap Text SourceCodeDescriptor
 
   -- application specific resource handling
 
-  , dapSourceRefMap       :: !(Bimap DapSourceRefDescriptor Int)
+  , dapSourceRefMap       :: !(Bimap SourceCodeDescriptor Int)
     -- ^ Used to track source reference IDs
     --
   , dapFrameIdMap         :: !(Bimap DapFrameIdDescriptor Int)

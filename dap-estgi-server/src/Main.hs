@@ -197,8 +197,8 @@ initESTG AttachArgs {..} = do
         , sourceCodeSet         = Set.fromList sourceCodeList
         , unitIdMap             = unitIdMap
         , haskellSrcPathMap     = haskellSrcPathMap
-        , dapSourceNameMap      = Bimap.fromList [(cs $ getSourceName d, SourceRef_SourceFileInFullpak d) | d <- sourceCodeList]
-        , dapSourceRefMap       = Bimap.fromList $ zip (map SourceRef_SourceFileInFullpak sourceCodeList) [1..]
+        , dapSourceNameMap      = Bimap.fromList [(cs $ getSourceName d, d) | d <- sourceCodeList]
+        , dapSourceRefMap       = Bimap.fromList $ zip sourceCodeList [1..]
         , dapFrameIdMap         = Bimap.empty
         , dapVariablesRefMap    = Bimap.empty
         , dapStackFrameCache    = mempty
@@ -363,7 +363,7 @@ talk CommandLoadedSources = do
           ForeignC{}  -> True
           _           -> False
     srcSet <- getsApp sourceCodeSet
-    mapM (getSourceFromSourceRefDescriptor . SourceRef_SourceFileInFullpak) $ filter shouldInclude $ Set.toList srcSet
+    mapM getSourceFromSourceCodeDescriptor $ filter shouldInclude $ Set.toList srcSet
 
 ----------------------------------------------------------------------------
 talk (CustomCommand "getSourceLinks") = customCommandGetSourceLinks

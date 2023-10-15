@@ -52,8 +52,8 @@ commandSetBreakpoints = do
   ESTG {..} <- getDebugSession
   case (setBreakpointsArgumentsBreakpoints, maybeSourceRef, maybeSourceRef >>= flip Bimap.lookupR dapSourceRefMap) of
     -- HINT: breakpoint on Haskell
-    (Just sourceBreakpoints, Just sourceRef, Just (SourceRef_SourceFileInFullpak hsCodeDesc@(Haskell pkg mod)))
-      | Just extStgSourceRef <- Bimap.lookup (SourceRef_SourceFileInFullpak $ ExtStg pkg mod) dapSourceRefMap
+    (Just sourceBreakpoints, Just sourceRef, Just hsCodeDesc@(Haskell pkg mod))
+      | Just extStgSourceRef <- Bimap.lookup (ExtStg pkg mod) dapSourceRefMap
       , Just hsSourceFilePath <- Bimap.lookupR hsCodeDesc haskellSrcPathMap
       -> do
       (_sourceCodeText, _locations, hsSrcLocs) <- getSourceFromFullPak extStgSourceRef
@@ -110,7 +110,7 @@ commandSetBreakpoints = do
       sendSetBreakpointsResponse breakpoints
 
     -- HINT: breakpoint on ExtStg
-    (Just sourceBreakpoints, Just sourceRef, Just (SourceRef_SourceFileInFullpak ExtStg{})) -> do
+    (Just sourceBreakpoints, Just sourceRef, Just ExtStg{}) -> do
       (_sourceCodeText, locations, _hsSrcLocs) <- getSourceFromFullPak sourceRef
       breakpoints <- forM sourceBreakpoints $ \SourceBreakpoint{..} -> do
         -- filter all relevant ranges

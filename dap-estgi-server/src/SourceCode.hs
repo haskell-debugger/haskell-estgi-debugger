@@ -135,7 +135,7 @@ getValidSourceRefFromSource Source{..} = do
 getSourceFromFullPak :: SourceId -> Adaptor ESTG (Text, [(StgPoint, SrcRange)], [(StgPoint, Tickish)])
 getSourceFromFullPak sourceId = do
   ESTG {..} <- getDebugSession
-  SourceRef_SourceFileInFullpak srcDesc <- case Bimap.lookupR sourceId dapSourceRefMap of
+  srcDesc <- case Bimap.lookupR sourceId dapSourceRefMap of
     Nothing     -> do
       sendError (ErrorMessage (T.pack $ "Unknown sourceId: " ++ show sourceId)) Nothing
     Just value  -> pure value
@@ -151,32 +151,32 @@ getSourceFromFullPak sourceId = do
         ir <- readModpakS fullPakPath sourcePath T.decodeUtf8
         pure (ir, [], [])
 
-getSourceFromSourceRefDescriptor :: DapSourceRefDescriptor -> Adaptor ESTG Source
-getSourceFromSourceRefDescriptor sourceRefDesc@(SourceRef_SourceFileInFullpak srcDesc) = do
+getSourceFromSourceCodeDescriptor :: SourceCodeDescriptor -> Adaptor ESTG Source
+getSourceFromSourceCodeDescriptor srcDesc = do
   srcDescSet <- getsApp sourceCodeSet
   extraSources <- case srcDesc of
     Haskell packageName qualModName
       | cStub <- FFICStub packageName qualModName
       , hStub <- FFIHStub packageName qualModName
       -> Just <$> sequence (
-      [ getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ ExtStg   packageName qualModName)
-      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ GhcCore  packageName qualModName)
-      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ GhcStg   packageName qualModName)
-      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ Cmm      packageName qualModName)
-      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ Asm      packageName qualModName)
-      , getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak $ ModInfo  packageName qualModName)
+      [ getSourceFromSourceCodeDescriptor (ExtStg   packageName qualModName)
+      , getSourceFromSourceCodeDescriptor (GhcCore  packageName qualModName)
+      , getSourceFromSourceCodeDescriptor (GhcStg   packageName qualModName)
+      , getSourceFromSourceCodeDescriptor (Cmm      packageName qualModName)
+      , getSourceFromSourceCodeDescriptor (Asm      packageName qualModName)
+      , getSourceFromSourceCodeDescriptor (ModInfo  packageName qualModName)
       ] ++
-      [ getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak cStub)
+      [ getSourceFromSourceCodeDescriptor cStub
       | Set.member cStub srcDescSet
       ] ++
-      [ getSourceFromSourceRefDescriptor (SourceRef_SourceFileInFullpak hStub)
+      [ getSourceFromSourceCodeDescriptor hStub
       | Set.member hStub srcDescSet
       ])
 
     _ -> pure Nothing
 
   let sourceName = cs $ getSourceName srcDesc
-  sourceRef <- getSourceRef sourceRefDesc
+  sourceRef <- getSourceRef srcDesc
   ESTG {..} <- getDebugSession
   pure defaultSource
     { sourceName            = Just $ sourceName -- used in source tree children
@@ -185,7 +185,7 @@ getSourceFromSourceRefDescriptor sourceRefDesc@(SourceRef_SourceFileInFullpak sr
     , sourceSources         = extraSources
     }
 
-getSourceRef :: DapSourceRefDescriptor -> Adaptor ESTG Int
+getSourceRef :: SourceCodeDescriptor -> Adaptor ESTG Int
 getSourceRef key = do
   -- NOTE: Source code related db is populated at initialization
   getsApp (Bimap.lookup key . dapSourceRefMap) >>= \case
