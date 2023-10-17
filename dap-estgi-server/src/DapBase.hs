@@ -86,7 +86,6 @@ data ValueRoot
 
 data DapVariablesRefDescriptor
   = VariablesRef_StackFrameVariables  DapFrameIdDescriptor
---  | VariablesRef_HeapObject           DapFrameIdDescriptor Int
   | VariablesRef_Value                ValueRoot RefNamespace Int
   deriving (Show, Eq, Ord)
 
