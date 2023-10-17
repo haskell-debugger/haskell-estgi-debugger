@@ -17,6 +17,21 @@ extra-source-files:
   CHANGELOG.md
 
 executable dap-estgi
+  other-modules:
+    Inspect.Stack
+    Inspect.Value
+    Inspect.Value.Atom
+    Inspect.Value.HeapObject
+    Inspect.Value.StackContinuation
+    CustomCommands
+    GraphProtocol.Commands
+    GraphProtocol.Server
+    Graph
+    Breakpoints
+    DapBase
+    SourceCode
+    SourceLocation
+
   main-is:
     Main.hs
   ghc-options:
@@ -45,6 +60,7 @@ executable dap-estgi
     , zip
     , bimap
     , pretty-simple
+    , network-simple
   hs-source-dirs:
     src
   default-language:
