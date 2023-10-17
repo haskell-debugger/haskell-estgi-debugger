@@ -9,6 +9,7 @@ import qualified Data.IntMap.Strict                    as IntMap
 import           Data.Text                             ( Text )
 import qualified Data.Text.Lazy                        as LazyText
 import qualified Text.Pretty.Simple                    as PP
+import           Foreign.Ptr
 
 import           Stg.Interpreter.Base                  hiding (lookupEnv, getCurrentThreadState, Breakpoint)
 import           Stg.Interpreter.GC.GCRef
@@ -82,12 +83,12 @@ getAtomTypeAndValue
   :: StgState
   -> Atom
   -> (String, String)
-getAtomTypeAndValue StgState{..} = \case
+getAtomTypeAndValue StgState{..} atom = case atom of
   HeapPtr addr
     | Just o <- IntMap.lookup addr ssHeap
     -> ("HeapPtr", show addr ++ "\n --- \n" ++ LazyText.unpack (PP.pShowNoColor o))
-  Literal (LitChar char)                       -> ("Char", [char])
-  Literal (LitString bytes)                    -> ("String", cs bytes)
+  Literal (LitChar char)                       -> ("Char", show char)
+  Literal (LitString bytes)                    -> ("String", cs $ show bytes)
   Literal LitNullAddr                          -> ("Address", "0x00000000")
   Literal (LitFloat float)                     -> ("Float", show float)
   Literal (LitDouble double)                   -> ("Double", show double)
@@ -101,20 +102,20 @@ getAtomTypeAndValue StgState{..} = \case
   WordAtom x                                   -> ("Word", show x)
   FloatAtom x                                  -> ("Float", show x)
   DoubleAtom x                                 -> ("Double", show x)
-  MVar x                                       -> ("MVar", show x)
-  MutVar x                                     -> ("MutVar", show x)
-  TVar x                                       -> ("TVar", show x)
-  Array idx                                    -> ("Array", show idx)
-  MutableArray idx                             -> ("MutableArray", show idx)
-  SmallArray idx                               -> ("SmallArray", show idx)
-  SmallMutableArray idx                        -> ("SmallMutableArray", show idx)
-  ArrayArray idx                               -> ("ArrayArray", show idx)
-  MutableArrayArray idx                        -> ("MutableArrayArray", show idx)
-  ByteArray idx                                -> ("ByteArray", show idx)
-  MutableByteArray idx                         -> ("MutableByteArray", show idx)
-  WeakPointer x                                -> ("WeakPoint", show x)
-  StableName x                                 -> ("StableName", show x)
-  ThreadId x                                   -> ("ThreadId", show x)
+  MVar x                                       -> ("MVar", show atom)
+  MutVar x                                     -> ("MutVar", show atom)
+  TVar x                                       -> ("TVar", show atom)
+  Array idx                                    -> ("Array", show atom)
+  MutableArray idx                             -> ("MutableArray", show atom)
+  SmallArray idx                               -> ("SmallArray", show atom)
+  SmallMutableArray idx                        -> ("SmallMutableArray", show atom)
+  ArrayArray idx                               -> ("ArrayArray", show atom)
+  MutableArrayArray idx                        -> ("MutableArrayArray", show atom)
+  ByteArray idx                                -> ("ByteArray", show atom)
+  MutableByteArray idx                         -> ("MutableByteArray", show atom)
+  WeakPointer x                                -> ("WeakPoint", show atom)
+  StableName x                                 -> ("StableName", show atom)
+  ThreadId x                                   -> ("ThreadId", show atom)
   LiftedUndefined                              -> ("LiftedUndefined","undefined")
 
 getHeapObjectSummary :: HeapObject -> String
@@ -136,3 +137,38 @@ getVariableForAtom name valueRoot atom = do
     , variableType  = Just (cs variableType)
     , variableVariablesReference = varsRef
     }
+
+valueToAtom :: RefNamespace -> Int -> Adaptor ESTG Atom
+valueToAtom ns i = do
+  StgState{..} <- getStgState
+  pure $ case ns of
+    NS_HeapPtr            -> HeapPtr i
+    NS_StablePointer      -> PtrAtom (StablePtr i) (intPtrToPtr $ IntPtr i)
+    NS_MVar               -> MVar i
+    NS_MutVar             -> MutVar i
+    NS_TVar               -> TVar i
+    NS_Array              -> Array $ ArrIdx i
+    NS_MutableArray       -> MutableArray $ MutArrIdx i
+    NS_SmallArray         -> SmallArray $ SmallArrIdx i
+    NS_SmallMutableArray  -> SmallMutableArray $ SmallMutArrIdx i
+    NS_ArrayArray         -> ArrayArray $ ArrayArrIdx i
+    NS_MutableArrayArray  -> MutableArrayArray $ ArrayMutArrIdx i
+    NS_MutableByteArray
+      | Just ByteArrayDescriptor{..} <- IntMap.lookup i ssMutableByteArrays
+      -> MutableByteArray $ ByteArrayIdx
+          { baId        = i
+          , baPinned    = baaPinned
+          , baAlignment = baaAlignment
+          }
+    NS_WeakPointer        -> WeakPointer i
+    NS_StableName         -> StableName i
+    NS_Thread             -> ThreadId i
+
+getValueSummary :: RefNamespace -> Int -> Adaptor ESTG String
+getValueSummary ns i = do
+  StgState{..} <- getStgState
+  pure $ case ns of
+    NS_HeapPtr
+      | Just o <- IntMap.lookup i ssHeap
+      -> "HeapPtr " ++ getHeapObjectSummary o
+    _ -> show (ns, i)
