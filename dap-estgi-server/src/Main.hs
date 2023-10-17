@@ -91,6 +91,7 @@ import           GraphProtocol.Server
 import           SourceCode
 import           SourceLocation
 import           Breakpoints
+import           Inspect.Value.Atom
 import           Inspect.Value
 import           Inspect.Stack
 import           Graph
@@ -212,74 +213,45 @@ initESTG AttachArgs {..} = do
       ]
     liftIO $ registerGraphChan __sessionId graphChan
 
-{-
-  Q: do we need sync I/O only between graph server and estgi-dap?
-
-  graph server
-    map: session id -> graph channel
-
-  esgi-dap
-    registers sessions to graph server
--}
-
 ----------------------------------------------------------------------------
 -- | Graph Event Handler
 handleGraphEvents :: GraphChan -> (Adaptor ESTG () -> IO ()) -> IO ()
 handleGraphEvents GraphChan{..} withAdaptor = forever $ do
   graphEvent <- liftIO (Unagi.readChan graphAsyncEventOut)
-  withAdaptor $ do
+  withAdaptor . flip catch handleDebuggerExceptions $ do
     let sendEvent ev = sendSuccesfulEvent ev . setBody
     case graphEvent of
-      -- show heap value implementation
-      GraphEventShowCode gcsymbol -> do
-        let root@(ns, idx) = decodeRef . GCSymbol $ cs gcsymbol
-        {-
-          TODO:
-            - create variables references
-            - send variables references to vscode
-        -}
-        varsRef <- getVariablesRef $ VariablesRef_Value (ValueRoot_Value root) ns idx
-        sendEvent (EventTypeCustom "showValues") $ object
-          [ "variablesReferences" .= (Aeson.Array . pure . Number $ fromIntegral varsRef)
-          ]
+      GraphEventShowValue nodeId
+        | Just programPoint <- readMaybe $ cs nodeId
+        -> do
+          let getStgPointFromProgramPoint = \case
+                PP_Global     -> Nothing
+                PP_Apply _ pp -> getStgPointFromProgramPoint pp
+                PP_StgPoint p -> Just p
+          case getStgPointFromProgramPoint programPoint of
+            Nothing -> pure ()
+            Just stgPoint -> do
+              srcLocJson <- getStgSourceLocJSON stgPoint
+              sendEvent (EventTypeCustom "showCode") srcLocJson
 
-      -- show code implementation
-      GraphEventShowCode gcsymbol -> do
-        {-
-          TODO:
-            lookup source loc just like in 'code:' like variable source range encoding
-          Q: how to convert Text to Id/Binder?
-            done - generalize source location encodin to program points
+      GraphEventShowValue nodeId
+        | Just root@(ns, idx) <- readMaybe $ cs nodeId
+        -> do
+          atom <- valueToAtom ns idx
+          var <- getVariableForAtom "" (ValueRoot_Value root) atom
+          sendEvent (EventTypeCustom "showValue") $ object
+            [ "variable" .= var
+            ]
 
-          TODO:
-            done - read GCSymbol
-            done - lookup stgpoint for GCSymbol when possible
-            done - get source location for stg point
-            done - send event, with document name, and source location
-        -}
-        StgState{..} <- getStgState
-        let (ns, idx) = decodeRef . GCSymbol $ cs gcsymbol
-        case ns of
-          NS_HeapPtr
-            | Just Closure{..} <- IntMap.lookup idx ssHeap
-            -> do
-                srcLocJson <- getStgSourceLocJSON . SP_Binding . binderToStgId $ unId hoName
-                sendEvent (EventTypeCustom "showCode") srcLocJson
-
-            | Just BlackHole{..} <- IntMap.lookup idx ssHeap
-            , Closure{..} <- hoBHOriginalThunk
-            -> do
-                srcLocJson <- getStgSourceLocJSON . SP_Binding . binderToStgId $ unId hoName
-                sendEvent (EventTypeCustom "showCode") srcLocJson
-
-          _ -> logInfo $ BL8.pack ("not program point for " <> show gcsymbol)
+      GraphEventShowValue nodeId -> do
+        logError $ BL8.pack ("invalid node id format: " <> cs nodeId)
 
 ----------------------------------------------------------------------------
 -- | Debug Event Handler
 handleDebugEvents :: DebuggerChan -> (Adaptor ESTG () -> IO ()) -> IO ()
 handleDebugEvents DebuggerChan{..} withAdaptor = forever $ do
   dbgEvent <- liftIO (Unagi.readChan dbgAsyncEventOut)
-  withAdaptor $ do
+  withAdaptor . flip catch handleDebuggerExceptions $ do
     ESTG {..} <- getDebugSession
     let sendEvent ev = sendSuccesfulEvent ev . setBody
     case dbgEvent of
