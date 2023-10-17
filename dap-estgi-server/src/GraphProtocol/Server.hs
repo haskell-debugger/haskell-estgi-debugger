@@ -39,9 +39,7 @@ data GraphEvent
 
 data GraphChan
   = GraphChan
-  { graphSyncRequest    :: MVar ()
-  , graphSyncResponse   :: MVar ()
-  , graphAsyncEventIn   :: InChan GraphEvent
+  { graphAsyncEventIn   :: InChan GraphEvent
   , graphAsyncEventOut  :: OutChan GraphEvent
   }
   deriving Eq

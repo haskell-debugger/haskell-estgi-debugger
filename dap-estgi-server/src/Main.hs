@@ -183,12 +183,8 @@ initESTG AttachArgs {..} = do
         , dbgAsyncEventOut  = dbgAsyncO
         }
   (graphAsyncI, graphAsyncO) <- liftIO (Unagi.newChan 100)
-  graphRequestMVar <- liftIO MVar.newEmptyMVar
-  graphResponseMVar <- liftIO MVar.newEmptyMVar
   let graphChan = GraphChan
-        { graphSyncRequest    = graphRequestMVar
-        , graphSyncResponse   = graphResponseMVar
-        , graphAsyncEventIn   = graphAsyncI
+        { graphAsyncEventIn   = graphAsyncI
         , graphAsyncEventOut  = graphAsyncO
         }
       estg = ESTG
