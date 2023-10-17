@@ -34,12 +34,6 @@ getUnitIdAndModuleNameForStgPoint = \case
 
 getSourceAndPositionForStgPoint :: StgPoint -> Adaptor ESTG (Maybe Source, Int, Int, Int, Int)
 getSourceAndPositionForStgPoint stgPoint = do
-  {-
-    TODO:
-      - remove id / binder, and use explicit package and module specification
-      - remove id for StgPoint
-      - support String -> StgPoint conversion
-  -}
   let (unitId, moduleNameBS) = getUnitIdAndModuleNameForStgPoint stgPoint
   ESTG {..} <- getDebugSession
   packageName <- case Bimap.lookup unitId unitIdMap of

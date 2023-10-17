@@ -33,14 +33,8 @@ serverConfig0 = ServerConfig
   , debugLogging       = True
   }
 
-{-
-  TODO:
-    gephi
-      - estgi panel
-      - estgi listener
--}
 data GraphEvent
-  = GraphEventShowCode Text
+  = GraphEventShowValue Text
   deriving (Show, Eq, Ord)
 
 data GraphChan
@@ -87,51 +81,32 @@ runGraphServer = withSocketsDo $ do
   when debugLogging $ putStrLn ("Running GRAPH server on " <> show port <> "...")
   serve (Host host) (show port) $ \(socket, address) -> do
     when debugLogging $ do
---      withGlobalLock $ do
-        putStrLn $ "TCP connection established from " ++ show address
+      putStrLn $ "TCP connection established from " ++ show address
     handle <- socketToHandle socket ReadWriteMode
     hSetNewlineMode handle NewlineMode { inputNL = CRLF, outputNL = CRLF }
     modifyIORef' graphServerStateIORef $ \s -> s {gssHandle = handle}
-    --request <- readPayload handle :: IO (Either String Value)
-    --print request
-    -- TODO: process request
-    -- TODO: send response
-    --adaptorStateMVar <- initAdaptorState handle address appStore serverConfig request
-{-
-    BS.hPut handle  $ encodeBaseProtocolMessage $
-      Aeson.object
-      [ "request"   .= Aeson.String "loadGraph"
-      , "title"     .= Aeson.String "Haskell Heap"
-      , "filepath"  .= Aeson.String "/home/csaba/call-graphs/q3mapviewer-call-graph.tsv"
-      ]
--}
     serviceClient handle -- `catch` exceptionHandler handle address debugLogging
 
 serviceClient :: Handle -> IO ()
 serviceClient handle = do
   {-
     get session id from message
-    lookup the communication cannel based on session id
+    lookup the communication channel based on session id
       if there is no match then report and error, or use the first session as a fallback
   -}
   nextRequest <- readPayload handle :: IO (Either String Value)
   print nextRequest
-  -- echo command
   case nextRequest of
     Left err -> do
       putStrLn $ "error: " ++ err
     Right (Aeson.Object json)
-      | Just "showCode" <- Aeson.lookup "event" json
-      , Just (Aeson.String pp) <- Aeson.lookup "programPoint" json
+      | Just "showValue" <- Aeson.lookup "event" json
+      , Just (Aeson.String nodeId) <- Aeson.lookup "nodeId" json
       -> do
         GraphServerState{..} <- readIORef graphServerStateIORef
-        let GraphChan{..} = head $ Map.elems gssGraphChanMap
-        Unagi.writeChan graphAsyncEventIn $ GraphEventShowCode pp
-        {-
-      let echo = encodeBaseProtocolMessage json
-      BS.putStrLn echo
-      BS.hPut handle echo
-      -}
+        -- TODO: handle sessions correctly, select the right session
+        forM_ (Map.elems gssGraphChanMap) $ \GraphChan{..} -> do
+          Unagi.writeChan graphAsyncEventIn $ GraphEventShowValue nodeId
     Right json -> do
       putStrLn $ "unknown event: " ++ show nextRequest
   -- loop: serve the next request
