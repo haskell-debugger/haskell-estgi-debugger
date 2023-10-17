@@ -55,7 +55,7 @@ getScopesForStackContinuation
 getScopesForStackContinuation frameIdDesc stackCont = do
   scopeVarablesRef <- getVariablesRef $ VariablesRef_StackFrameVariables frameIdDesc
   let scope = defaultScope
-        { scopeName = "Locals: " <> T.pack (showStackCont stackCont)
+        { scopeName = "Locals"
         , scopePresentationHint = Just ScopePresentationHintLocals
         , scopeVariablesReference = scopeVarablesRef
         }
