@@ -11,9 +11,10 @@ import DAP.Utils
 
 data LoadGraph
   = LoadGraph
-  { loadGraphRequest  :: Text
-  , loadGraphTitle    :: Text
-  , loadGraphFilepath :: Text
+  { loadGraphRequest        :: Text
+  , loadGraphTitle          :: Text
+  , loadGraphNodesFilepath  :: Maybe Text
+  , loadGraphEdgesFilepath  :: Text
   } deriving stock (Show, Eq, Generic)
 ----------------------------------------------------------------------------
 instance ToJSON LoadGraph where
