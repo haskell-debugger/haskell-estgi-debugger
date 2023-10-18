@@ -29,6 +29,20 @@ import GraphProtocol.Server
 import GraphProtocol.Commands
 import Inspect.Value.Atom
 
+customCommandSelectVariableGraphNode :: Adaptor ESTG ()
+customCommandSelectVariableGraphNode = do
+  SelectVariableGraphNodeArguments {..} <- getArguments
+  getsApp (Bimap.lookupR selectVariableGraphNodeArgumentsVariablesReference . dapVariablesRefMap) >>= \case
+    Just VariablesRef_StackFrameVariables{} -> do
+      sendSuccesfulEmptyResponse
+    Just (VariablesRef_Value _valueRoot valueNameSpace addr) -> do
+      liftIO $ sendGraphCommand SelectNode
+        { selectNodeRequest = "selectNode"
+        , selectNodeNodeId  = cs $ show (valueNameSpace, addr)
+        }
+      sendSuccesfulEmptyResponse
+    Nothing -> sendError (ErrorMessage (T.pack $ "Unknown variables ref: " ++ show selectVariableGraphNodeArgumentsVariablesReference)) Nothing
+
 customCommandShowVariableGraphStructure :: Adaptor ESTG ()
 customCommandShowVariableGraphStructure = do
   ShowVariableGraphStructureArguments {..} <- getArguments

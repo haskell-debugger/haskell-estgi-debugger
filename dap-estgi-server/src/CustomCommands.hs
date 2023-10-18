@@ -52,3 +52,14 @@ instance FromJSON ShowVariableGraphStructureArguments where
   parseJSON = genericParseJSONWithModifier
 
 ----------------------------------------------------------------------------
+
+----------------------------------------------------------------------------
+data SelectVariableGraphNodeArguments
+  = SelectVariableGraphNodeArguments
+  { selectVariableGraphNodeArgumentsVariablesReference :: Int
+  } deriving stock (Show, Eq, Generic)
+
+instance FromJSON SelectVariableGraphNodeArguments where
+  parseJSON = genericParseJSONWithModifier
+
+----------------------------------------------------------------------------

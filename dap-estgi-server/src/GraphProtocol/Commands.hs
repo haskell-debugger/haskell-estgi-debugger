@@ -21,3 +21,14 @@ instance ToJSON LoadGraph where
   toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------
 
+
+data SelectNode
+  = SelectNode
+  { selectNodeRequest       :: Text
+  , selectNodeNodeId        :: Text
+  } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+instance ToJSON SelectNode where
+  toJSON = genericToJSONWithModifier
+----------------------------------------------------------------------------
+
