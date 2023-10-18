@@ -102,18 +102,19 @@ import           Graph
 -- Converts the 'Socket' to a 'Handle' for convenience
 main :: IO ()
 main = do
-  config <- getConfig
-  forkIO runGraphServer
+  (config, graphConfig) <- getConfig
+  forkIO $ runGraphServer graphConfig
   finally (runDAPServer config talk) $ do
     putStrLn "dap finished, bye!"
 
 ----------------------------------------------------------------------------
 -- | Fetch config from environment, fallback to sane defaults
-getConfig :: IO ServerConfig
+getConfig :: IO (ServerConfig, GraphServerConfig)
 getConfig = do
   let
-    hostDefault = "0.0.0.0"
-    portDefault = 4711
+    hostDefault       = "0.0.0.0"
+    portDefault       = 4711
+    graphPortDefault  = 4721
     capabilities = defaultCapabilities
       { supportsConfigurationDoneRequest      = True
       , supportsHitConditionalBreakpoints     = True
@@ -128,12 +129,18 @@ getConfig = do
       , supportTerminateDebuggee              = True
       , supportsLoadedSourcesRequest          = True
       }
-  ServerConfig
+  config <- ServerConfig
     <$> do fromMaybe hostDefault <$> lookupEnv "DAP_HOST"
     <*> do fromMaybe portDefault . (readMaybe =<<) <$> do lookupEnv "DAP_PORT"
     <*> pure capabilities
     <*> pure True
 
+  graphConfig <- GraphServerConfig
+    <$> do fromMaybe hostDefault <$> lookupEnv "DAP_HOST"
+    <*> do fromMaybe graphPortDefault . (readMaybe =<<) <$> do lookupEnv "DAP_GRAPH_PORT"
+    <*> pure True
+
+  pure (config, graphConfig)
 
 findProgram :: String -> IO [FilePath]
 findProgram globPattern = do
@@ -335,6 +342,8 @@ talk CommandLoadedSources = do
 
 ----------------------------------------------------------------------------
 talk (CustomCommand "getSourceLinks") = customCommandGetSourceLinks
+----------------------------------------------------------------------------
+talk (CustomCommand "selectVariableGraphNode") = customCommandSelectVariableGraphNode
 ----------------------------------------------------------------------------
 talk (CustomCommand "showVariableGraphStructure") = customCommandShowVariableGraphStructure
 ----------------------------------------------------------------------------

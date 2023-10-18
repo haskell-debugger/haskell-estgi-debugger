@@ -26,11 +26,11 @@ import System.IO.Unsafe
 import Control.Concurrent.MVar
 import Control.Concurrent.Chan.Unagi.Bounded as Unagi
 
-serverConfig0 = ServerConfig
-  { host               = "0.0.0.0"
-  , port               = 4721
-  , serverCapabilities = defaultCapabilities
-  , debugLogging       = True
+data GraphServerConfig
+  = GraphServerConfig
+  { graphServerHost         :: String
+  , graphServerPort         :: Int
+  , graphServerDebugLogging :: Bool
   }
 
 data GraphEvent
@@ -49,49 +49,72 @@ instance Show GraphChan where
 
 data GraphServerState
   = GraphServerState
-  { gssHandle       :: Handle
-  , gssGraphChanMap :: Map Text GraphChan
+  { gssHandle     :: Maybe Handle
+  , gssGraphChan  :: Maybe GraphChan
+  , gssConfig     :: GraphServerConfig
   }
 
-emptyGraphServerState :: GraphServerState
-emptyGraphServerState = GraphServerState
-  { gssHandle       = error "missing gssHandle"
-  , gssGraphChanMap = mempty
-  }
+{-
+  DESIGN:
+    currently only one dap session and one gephi session is supported
+    i.e. vscode --- estgi-dap --- gephi
+    multi session dap or multi session gephi is not supported
+
+  use cases:
+    debug one program
+      1 vscode
+      1 gephi
+      1 estgi dap session / program
+    debug multiple programs - not supported yet
+-}
 
 {-# NOINLINE graphServerStateIORef #-}
 graphServerStateIORef :: IORef GraphServerState
-graphServerStateIORef = unsafePerformIO $ newIORef emptyGraphServerState
+graphServerStateIORef = unsafePerformIO $ newIORef $ error "uninitialized graph server"
 
 registerGraphChan :: Text -> GraphChan -> IO ()
-registerGraphChan sessionId graphChan = do
-  modifyIORef' graphServerStateIORef $ \s@GraphServerState{..} -> s {gssGraphChanMap = Map.insert sessionId graphChan gssGraphChanMap}
+registerGraphChan _sessionId graphChan = do
+    -------------------------------------------
+    -- NOTE: only one dap session is supported
+    -------------------------------------------
+  modifyIORef' graphServerStateIORef $ \s@GraphServerState{..} -> s {gssGraphChan = Just graphChan}
 
 sendGraphCommand :: ToJSON a => a -> IO ()
 sendGraphCommand msg = do
   GraphServerState{..} <- readIORef graphServerStateIORef
-  BS.hPut gssHandle $ encodeBaseProtocolMessage msg
+  case gssHandle of
+    Nothing -> when (graphServerDebugLogging gssConfig) $ putStrLn $ "no graph client, can not send graph command: " ++ show (Aeson.encode msg)
+    Just h  -> BS.hPut h $ encodeBaseProtocolMessage msg
 
-runGraphServer :: IO ()
-runGraphServer = withSocketsDo $ do
-  let ServerConfig{..} = serverConfig0
-      serverConfig = serverConfig0
-  when debugLogging $ putStrLn ("Running GRAPH server on " <> show port <> "...")
-  serve (Host host) (show port) $ \(socket, address) -> do
-    when debugLogging $ do
+sendGraphEvent :: GraphEvent -> IO ()
+sendGraphEvent ev = do
+  GraphServerState{..} <- readIORef graphServerStateIORef
+  case gssGraphChan of
+    Nothing             -> when (graphServerDebugLogging gssConfig) $ putStrLn $ "no dap session, can not send graph event: " ++ show ev
+    Just GraphChan{..}  -> Unagi.writeChan graphAsyncEventIn ev
+
+runGraphServer :: GraphServerConfig -> IO ()
+runGraphServer serverConfig = withSocketsDo $ do
+  let GraphServerConfig{..} = serverConfig
+  writeIORef graphServerStateIORef GraphServerState
+    { gssHandle     = Nothing
+    , gssGraphChan  = Nothing
+    , gssConfig     = serverConfig
+    }
+  when graphServerDebugLogging $ putStrLn ("Running GRAPH server on " <> show graphServerPort <> "...")
+  serve (Host graphServerHost) (show graphServerPort) $ \(socket, address) -> do
+    when graphServerDebugLogging $ do
       putStrLn $ "TCP connection established from " ++ show address
     handle <- socketToHandle socket ReadWriteMode
     hSetNewlineMode handle NewlineMode { inputNL = CRLF, outputNL = CRLF }
-    modifyIORef' graphServerStateIORef $ \s -> s {gssHandle = handle}
+    -------------------------------------------
+    -- NOTE: only one gephi client is supported
+    -------------------------------------------
+    modifyIORef' graphServerStateIORef $ \s -> s {gssHandle = Just handle}
     serviceClient handle -- `catch` exceptionHandler handle address debugLogging
 
 serviceClient :: Handle -> IO ()
 serviceClient handle = do
-  {-
-    get session id from message
-    lookup the communication channel based on session id
-      if there is no match then report and error, or use the first session as a fallback
-  -}
   nextRequest <- readPayload handle :: IO (Either String Value)
   print nextRequest
   case nextRequest of
@@ -101,20 +124,8 @@ serviceClient handle = do
       | Just "showValue" <- Aeson.lookup "event" json
       , Just (Aeson.String nodeId) <- Aeson.lookup "nodeId" json
       -> do
-        GraphServerState{..} <- readIORef graphServerStateIORef
-        -- TODO: handle sessions correctly, select the right session
-        forM_ (Map.elems gssGraphChanMap) $ \GraphChan{..} -> do
-          Unagi.writeChan graphAsyncEventIn $ GraphEventShowValue nodeId
+        sendGraphEvent $ GraphEventShowValue nodeId
     Right json -> do
       putStrLn $ "unknown event: " ++ show nextRequest
   -- loop: serve the next request
   serviceClient handle
-
-{-
-  use cases:
-    debug one program
-      1 vscode
-      1 gephi
-      1 estgi dap session / program
-    debug multiple programs
--}
