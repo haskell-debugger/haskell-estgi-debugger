@@ -173,12 +173,20 @@ data AttachArgs
 ----------------------------------------------------------------------------
 initESTG :: AttachArgs -> Adaptor ESTG ()
 initESTG AttachArgs {..} = do
-  ghcstgappPath <- (liftIO $ findProgram program) >>= \case
+  programPath <- (liftIO $ findProgram program) >>= \case
     [fname] -> pure fname
-    []      -> sendError (ErrorMessage (T.pack $ unlines ["No .ghc_stgapp program found at:", program])) Nothing
+    []      -> sendError (ErrorMessage (T.pack $ unlines ["No program found at:", program])) Nothing
     names   -> sendError (ErrorMessage (T.pack $ unlines $ ["Ambiguous program path:", program, "Use more specific path pattern to fix the issue.", "Multiple matches:"] ++ names)) Nothing
-  let fullpakPath = ghcstgappPath -<.> ".fullpak"
-  liftIO $ mkFullpak ghcstgappPath False False fullpakPath
+  fullpakPath <- case takeExtension programPath of
+    ".fullpak" -> do
+      -- handle .fullpak
+      pure programPath
+    _ -> do
+      -- handle .ghc_stgapp
+      let fname = programPath -<.> ".fullpak"
+      liftIO $ mkFullpak programPath False False fname
+      pure fname
+
   (sourceCodeList, unitIdMap, haskellSrcPathMap) <- liftIO $ getSourceCodeListFromFullPak fullpakPath
   (dbgAsyncI, dbgAsyncO) <- liftIO (Unagi.newChan 100)
   dbgRequestMVar <- liftIO MVar.newEmptyMVar
