@@ -14,6 +14,7 @@ import qualified Data.Aeson.KeyMap          as Aeson
 
 import qualified Data.ByteString.Char8      as BS
 
+import           Data.String.Conversions               (cs)
 import           Data.Text                             ( Text )
 import qualified Data.Map.Strict                       as Map
 import           Data.Map.Strict                       ( Map )
@@ -83,7 +84,7 @@ sendGraphCommand :: ToJSON a => a -> IO ()
 sendGraphCommand msg = do
   GraphServerState{..} <- readIORef graphServerStateIORef
   case gssHandle of
-    Nothing -> when (graphServerDebugLogging gssConfig) $ putStrLn $ "no graph client, can not send graph command: " ++ show (Aeson.encode msg)
+    Nothing -> when (graphServerDebugLogging gssConfig) $ putStrLn $ "no graph client, can not send graph command: " ++ cs (Aeson.encode msg)
     Just h  -> BS.hPut h $ encodeBaseProtocolMessage msg
 
 sendGraphEvent :: GraphEvent -> IO ()
