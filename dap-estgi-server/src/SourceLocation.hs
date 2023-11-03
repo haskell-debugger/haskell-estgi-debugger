@@ -32,6 +32,7 @@ getUnitIdAndModuleNameForStgPoint = \case
   SP_Binding StgId{..}            -> (UnitId siUnitId, ModuleName siModuleName)
   SP_Tickish stgPoint             -> getUnitIdAndModuleNameForStgPoint stgPoint
 
+-- TODO: precalc in a map
 getSourceAndPositionForStgPoint :: StgPoint -> Adaptor ESTG (Maybe Source, Int, Int, Int, Int)
 getSourceAndPositionForStgPoint stgPoint = do
   let (unitId, moduleNameBS) = getUnitIdAndModuleNameForStgPoint stgPoint
@@ -91,8 +92,14 @@ getStgSourceLocJSON stgPoint = do
           ]
   pure srcLocJson
 
+-- TODO: precalc in a map
 customCommandGetSourceLinks :: Adaptor ESTG ()
 customCommandGetSourceLinks = do
+  let progressId = "estgi-get-source-links"
+  sendProgressStartEvent $ defaultProgressStartEvent
+    { progressStartEventProgressId  = progressId
+    , progressStartEventTitle       = "Running get source links..."
+    }
   GetSourceLinksArguments {..} <- getArguments
   ESTG {..} <- getDebugSession
   sourceLinks <- case Bimap.lookup getSourceLinksArgumentsPath dapSourceNameMap of
@@ -130,4 +137,8 @@ customCommandGetSourceLinks = do
     _ -> pure []
   sendSuccesfulResponse . setBody $ GetSourceLinksResponse
     { getSourceLinksResponseSourceLinks = sourceLinks
+    }
+  sendProgressEndEvent $ defaultProgressEndEvent
+    { progressEndEventProgressId  = progressId
+    , progressEndEventMessage     = Just "Get source links finished."
     }
