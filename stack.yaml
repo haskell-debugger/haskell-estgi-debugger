@@ -4,6 +4,7 @@ packages:
   - dap-estgi-server
 
 extra-deps:
+  - dom-lt-0.2.3
   - souffle-haskell-3.5.1
   - type-errors-pretty-0.0.1.2@sha256:9042b64d1ac2f69aa55690576504a2397ebea8a6a55332242c88f54027c7eb57,2781
   - async-pool-0.9.1@sha256:4015140f896c3f1652b06a679b0ade2717d05557970c283ea2c372a71be2a6a1,1605
@@ -12,10 +13,10 @@ extra-deps:
     commit: ac9616b94cb8c4a9e07188d19979a6225ebd5a10
 
   - git: https://github.com/haskell-debugger/dap
-    commit: 31c114964e30b8c96279ddef6fbe8d6549b52e9e
+    commit: 0990087985da0bc14388fd2d394f8aff1bcf7d7a
 
   - git: https://github.com/grin-compiler/ghc-whole-program-compiler-project
-    commit: 59aacc82f1d15e1534cbdd52cdce781cbd6c81dc
+    commit: a4b0c92cdf5dfb204be314e5f47d71fc8e5bc06b
     subdirs:
       - external-stg
       - external-stg-syntax
