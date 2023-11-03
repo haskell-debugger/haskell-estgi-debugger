@@ -14,7 +14,7 @@ import qualified Data.Text.Encoding                    as T
 import qualified Data.Map.Strict                       as Map
 import qualified Data.ByteString.Lazy.Char8            as BL8 ( pack, unpack, fromStrict, toStrict )
 import           System.FilePath                       ( (-<.>), (</>), takeDirectory, takeFileName, takeExtension, dropExtension, splitFileName, splitPath, joinPath, splitDirectories)
-import           Codec.Archive.Zip                     (withArchive, unEntrySelector, getEntries)
+import           Codec.Archive.Zip                     (withArchive, unEntrySelector, getEntries, mkEntrySelector, getEntry)
 import           Data.Yaml                             hiding (Array)
 
 import           Stg.Syntax                            hiding (sourceName, Scope)
@@ -59,12 +59,15 @@ getSourceName = \case
 ----------------------------------------------------------------------------
 -- | Retrieves list of modules from .fullpak file
 getSourceCodeListFromFullPak :: FilePath -> IO ([SourceCodeDescriptor], Bimap UnitId PackageName, Bimap Name SourceCodeDescriptor)
-getSourceCodeListFromFullPak fullPakPath = do
-  rawEntries <- fmap unEntrySelector . Map.keys <$> withArchive fullPakPath getEntries
+getSourceCodeListFromFullPak fullPakPath = withArchive fullPakPath $ do
+  liftIO $ putStrLn "getSourceCodeListFromFullPak 1"
+  rawEntries <- fmap unEntrySelector . Map.keys <$> getEntries
+  liftIO $ putStrLn "getSourceCodeListFromFullPak 2"
   let folderNames = Set.fromList (takeDirectory <$> rawEntries)
       appInfoName = "app.info"
-  appInfoBytes <- readModpakL fullPakPath appInfoName id
-  AppInfo{..} <- decodeThrow (BL8.toStrict appInfoBytes)
+      readFromZip fname = mkEntrySelector fname >>= getEntry
+  appInfoBytes <- readFromZip appInfoName
+  AppInfo{..} <- liftIO $ decodeThrow (cs appInfoBytes)
   let unitIdMap = Bimap.fromList
         [ (UnitId $ cs ciUnitId, cs ciPackageName)
         | CodeInfo{..} <- aiLiveCode
@@ -104,7 +107,8 @@ getSourceCodeListFromFullPak fullPakPath = do
 
   hsPathList <- forM aiLiveCode $ \CodeInfo{..} -> do
     let extStgPath = getSourcePath $ ExtStg (cs ciPackageName) (cs ciModuleName)
-    (_phase, _unitId, _modName, mSrcFilePath, _stubs, _hasForeignExport, _deps) <- readModpakL fullPakPath extStgPath decodeStgbinInfo
+    liftIO $ putStrLn $ "getSourceCodeListFromFullPak " ++ extStgPath
+    (_phase, _unitId, _modName, mSrcFilePath, _stubs, _hasForeignExport, _deps) <- decodeStgbinInfo . cs <$> readFromZip extStgPath
     case mSrcFilePath of
       Nothing -> pure []
       Just p  -> pure [(cs p, Haskell (cs ciPackageName) (cs ciModuleName))]
@@ -132,6 +136,7 @@ getValidSourceRefFromSource Source{..} = do
 
 ----------------------------------------------------------------------------
 -- | Retrieves list of modules from .fullpak file
+-- TODO: precalc in a map
 getSourceFromFullPak :: SourceId -> Adaptor ESTG (Text, [(StgPoint, SrcRange)], [(StgPoint, Tickish)])
 getSourceFromFullPak sourceId = do
   ESTG {..} <- getDebugSession
