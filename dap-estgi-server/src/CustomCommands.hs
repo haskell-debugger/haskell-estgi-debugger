@@ -7,6 +7,7 @@ import           GHC.Generics                    ( Generic )
 import Data.Text
 import Data.Aeson
 import DAP.Utils
+import CustomDapTypes
 
 data GetSourceLinksArguments
   = GetSourceLinksArguments
@@ -53,6 +54,16 @@ instance FromJSON ShowVariableGraphStructureArguments where
 
 ----------------------------------------------------------------------------
 
+data ShowRetainerGraphArguments
+  = ShowRetainerGraphArguments
+  { showRetainerGraphArgumentsVariablesReference :: Int
+  } deriving stock (Show, Eq, Generic)
+
+instance FromJSON ShowRetainerGraphArguments where
+  parseJSON = genericParseJSONWithModifier
+
+----------------------------------------------------------------------------
+
 ----------------------------------------------------------------------------
 data SelectVariableGraphNodeArguments
   = SelectVariableGraphNodeArguments
@@ -62,4 +73,30 @@ data SelectVariableGraphNodeArguments
 instance FromJSON SelectVariableGraphNodeArguments where
   parseJSON = genericParseJSONWithModifier
 
+----------------------------------------------------------------------------
+data RegionsResponse
+  = RegionsResponse
+  { regionsResponseRegions :: [Region]
+  } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+instance ToJSON RegionsResponse where
+  toJSON = genericToJSONWithModifier
+----------------------------------------------------------------------------
+
+data RegionInstancesArguments
+  = RegionInstancesArguments
+  { regionInstancesArgumentsRegionName :: Text
+  } deriving stock (Show, Eq, Generic)
+
+instance FromJSON RegionInstancesArguments where
+  parseJSON = genericParseJSONWithModifier
+
+----------------------------------------------------------------------------
+data RegionInstancesResponse
+  = RegionInstancesResponse
+  { regionInstancesResponseRegionInstances :: [RegionInstance]
+  } deriving stock (Show, Eq, Generic)
+----------------------------------------------------------------------------
+instance ToJSON RegionInstancesResponse where
+  toJSON = genericToJSONWithModifier
 ----------------------------------------------------------------------------

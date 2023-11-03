@@ -24,6 +24,7 @@ executable dap-estgi
     Inspect.Value.HeapObject
     Inspect.Value.StackContinuation
     CustomCommands
+    CustomDapTypes
     GraphProtocol.Commands
     GraphProtocol.Server
     Graph
@@ -31,6 +32,8 @@ executable dap-estgi
     DapBase
     SourceCode
     SourceLocation
+    SharedFolder
+    Region
 
   main-is:
     Main.hs
@@ -45,6 +48,7 @@ executable dap-estgi
     , external-stg-interpreter
     , external-stg-syntax
     , external-stg
+    , directory
     , filepath
     , filemanip
     , lifted-base

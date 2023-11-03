@@ -8,6 +8,7 @@ import           Data.String.Conversions               (cs)
 import           Control.Monad
 import           Control.Monad.IO.Class                (liftIO)
 import qualified Data.Text                             as T
+import qualified Data.Map.Strict                       as Map
 import qualified Data.IntMap.Strict                    as IntMap
 import qualified Data.Bimap                            as Bimap
 import qualified Data.Set                              as Set
@@ -20,6 +21,7 @@ import System.IO
 import           Stg.Interpreter.Base                  hiding (lookupEnv, getCurrentThreadState, Breakpoint)
 import           Stg.Interpreter.GC.GCRef
 import           Stg.Interpreter.Debugger.TraverseState
+import           Stg.Interpreter.Debugger.Retainer
 import           Stg.IRLocation
 
 import DAP
@@ -28,6 +30,8 @@ import CustomCommands
 import GraphProtocol.Server
 import GraphProtocol.Commands
 import Inspect.Value.Atom
+import SharedFolder
+import Region
 
 customCommandSelectVariableGraphNode :: Adaptor ESTG ()
 customCommandSelectVariableGraphNode = do
@@ -43,10 +47,68 @@ customCommandSelectVariableGraphNode = do
       sendSuccesfulEmptyResponse
     Nothing -> sendError (ErrorMessage (T.pack $ "Unknown variables ref: " ++ show selectVariableGraphNodeArgumentsVariablesReference)) Nothing
 
+customCommandShowRetainerGraph :: Adaptor ESTG ()
+customCommandShowRetainerGraph = do
+  ShowRetainerGraphArguments {..} <- getArguments
+{-
+  = ShowRetainerGraphArguments
+  { showRetainerGraphArgumentsVariablesReference :: Int
+-}
+  getsApp (Bimap.lookupR showRetainerGraphArgumentsVariablesReference . dapVariablesRefMap) >>= \case
+    Just (VariablesRef_Value _valueRoot valueNameSpace addr) -> do
+      stgState@StgState{..} <- getStgState
+      valueSummary <- getValueSummary valueNameSpace addr
+
+      -- generate names
+      ESTG {..} <- getDebugSession
+      let nodesFname = fullPakPath ++ "-graph-nodes.tsv"
+          edgesFname = fullPakPath ++ "-graph-edges.tsv"
+      hostNodesFname <- mapFilePathToHost nodesFname
+      hostEdgesFname <- mapFilePathToHost edgesFname
+
+      liftIO $ exportRetainerGraph nodesFname edgesFname stgState $ encodeRef addr valueNameSpace
+      liftIO $ sendGraphCommand LoadGraph
+        { loadGraphRequest  = "loadGraph"
+        , loadGraphTitle    = cs $ show addr ++ " " ++ valueSummary
+        , loadGraphNodesFilepath = Just $ cs hostNodesFname
+        , loadGraphEdgesFilepath = cs hostEdgesFname
+        }
+      sendSuccesfulEmptyResponse
+    Just v -> sendError (ErrorMessage (T.pack $ "Visualization is not yet supported for: " ++ show v)) Nothing
+    Nothing -> sendError (ErrorMessage (T.pack $ "Unknown variables ref: " ++ show showRetainerGraphArgumentsVariablesReference)) Nothing
+
 customCommandShowVariableGraphStructure :: Adaptor ESTG ()
 customCommandShowVariableGraphStructure = do
   ShowVariableGraphStructureArguments {..} <- getArguments
   getsApp (Bimap.lookupR showVariableGraphStructureArgumentsVariablesReference . dapVariablesRefMap) >>= \case
+    Just r@(VariablesRef_RegionInstance region idx) -> do
+      stgState@StgState{..} <- getStgState
+      case Map.lookup region ssRegionInstances of
+        Just instanceMap
+          | Just (start, end) <- IntMap.lookup idx instanceMap
+          -> do
+              -- generate names
+              ESTG {..} <- getDebugSession
+              let nodesFname = fullPakPath ++ "-graph-nodes.tsv"
+                  edgesFname = fullPakPath ++ "-graph-edges.tsv"
+              hostNodesFname <- mapFilePathToHost nodesFname
+              hostEdgesFname <- mapFilePathToHost edgesFname
+
+              let heap  = getRegionHeap (asNextHeapAddr start) (asNextHeapAddr end) ssHeap
+                  title = case region of
+                            IRRegion{}      -> "region instance " ++ show idx
+                            EventRegion{..} -> cs regionName ++ " instance " ++ show idx
+              liftIO $ exportHeapGraph nodesFname edgesFname heap
+              liftIO $ sendGraphCommand LoadGraph
+                { loadGraphRequest       = "loadGraph"
+                , loadGraphTitle         = cs title
+                , loadGraphNodesFilepath = Just $ cs hostNodesFname
+                , loadGraphEdgesFilepath = cs hostEdgesFname
+                }
+              sendSuccesfulEmptyResponse
+
+        _ -> sendError (ErrorMessage (T.pack $ "Unknown region instance: " ++ show r)) Nothing
+
     Just VariablesRef_StackFrameVariables{} -> do
       -- TODO: create graph from the full stack frame
       sendSuccesfulEmptyResponse
@@ -58,13 +120,15 @@ customCommandShowVariableGraphStructure = do
       ESTG {..} <- getDebugSession
       let nodesFname = fullPakPath ++ "-graph-nodes.tsv"
           edgesFname = fullPakPath ++ "-graph-edges.tsv"
+      hostNodesFname <- mapFilePathToHost nodesFname
+      hostEdgesFname <- mapFilePathToHost edgesFname
 
       liftIO $ exportReachableGraph nodesFname edgesFname stgState $ encodeRef addr valueNameSpace
       liftIO $ sendGraphCommand LoadGraph
         { loadGraphRequest  = "loadGraph"
         , loadGraphTitle    = cs $ show addr ++ " " ++ valueSummary
-        , loadGraphNodesFilepath = Just $ cs nodesFname
-        , loadGraphEdgesFilepath = cs edgesFname
+        , loadGraphNodesFilepath = Just $ cs hostNodesFname
+        , loadGraphEdgesFilepath = cs hostEdgesFname
         }
       sendSuccesfulEmptyResponse
     Nothing -> sendError (ErrorMessage (T.pack $ "Unknown variables ref: " ++ show showVariableGraphStructureArgumentsVariablesReference)) Nothing
@@ -74,6 +138,8 @@ customCommandShowCallGraph = do
   ESTG {..} <- getDebugSession
   let nodesFname = fullPakPath ++ "-graph-nodes.tsv"
       edgesFname = fullPakPath ++ "-graph-edges.tsv"
+  hostNodesFname <- mapFilePathToHost nodesFname
+  hostEdgesFname <- mapFilePathToHost edgesFname
   StgState{..} <- getStgState
   liftIO $ do
     writeCallGraphEdges edgesFname ssCallGraph
@@ -81,8 +147,8 @@ customCommandShowCallGraph = do
     sendGraphCommand LoadGraph
       { loadGraphRequest  = "loadGraph"
       , loadGraphTitle    = cs $ takeFileName fullPakPath ++ " call graph"
-      , loadGraphNodesFilepath = Just $ cs nodesFname
-      , loadGraphEdgesFilepath = cs edgesFname
+      , loadGraphNodesFilepath = Just $ cs hostNodesFname
+      , loadGraphEdgesFilepath = cs hostEdgesFname
       }
   sendSuccesfulEmptyResponse
 

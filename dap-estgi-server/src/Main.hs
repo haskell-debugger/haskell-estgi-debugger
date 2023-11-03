@@ -25,7 +25,6 @@ module Main (main) where
 import           Data.List
 import           Data.String.Conversions               (cs)
 import           Text.PrettyPrint.ANSI.Leijen          (pretty, plain)
-import           Codec.Archive.Zip                     (withArchive, unEntrySelector, getEntries)
 import           Data.IntSet                           ( IntSet )
 import qualified Data.IntSet                           as IntSet
 import           Data.Set                              ( Set )
@@ -61,8 +60,10 @@ import qualified Data.ByteString.Lazy.Char8            as BL8 ( pack, unpack, fr
 import qualified Control.Concurrent.Chan.Unagi.Bounded as Unagi
 import           Control.Concurrent.MVar               ( MVar )
 import qualified Control.Concurrent.MVar               as MVar
-import           Control.Concurrent                    ( forkIO )
+import           Control.Concurrent                    ( forkIO, ThreadId )
 import qualified System.FilePath.Find                  as Glob
+import           System.IO.Unsafe                      ( unsafePerformIO )
+import           System.IO
 ----------------------------------------------------------------------------
 import           Stg.Syntax                            hiding (sourceName, Scope)
 import           Stg.IRLocation
@@ -76,7 +77,6 @@ import           Stg.Interpreter.Debugger
 import           Stg.Interpreter.Debugger.UI
 import           Stg.Interpreter.Debugger.TraverseState
 import           Stg.Interpreter.GC.GCRef
-import           Stg.IO
 import           Stg.Program
 import           Stg.Fullpak
 import           Data.Yaml                             hiding (Array)
@@ -84,7 +84,7 @@ import qualified Text.Pretty.Simple                    as PP
 ----------------------------------------------------------------------------
 import           DAP                                   hiding (send)
 ----------------------------------------------------------------------------
-import           DapBase
+import           DapBase hiding (ThreadId)
 import           CustomCommands
 import           GraphProtocol.Commands
 import           GraphProtocol.Server
@@ -95,6 +95,7 @@ import           Inspect.Value.Atom
 import           Inspect.Value
 import           Inspect.Stack
 import           Graph
+import           Region
 ----------------------------------------------------------------------------
 -- | DAP entry point
 -- Extracts configuration information from the environment
@@ -102,6 +103,7 @@ import           Graph
 -- Converts the 'Socket' to a 'Handle' for convenience
 main :: IO ()
 main = do
+  hSetBuffering stdout LineBuffering
   (config, graphConfig) <- getConfig
   forkIO $ runGraphServer graphConfig
   finally (runDAPServer config talk) $ do
@@ -155,6 +157,7 @@ findProgram globPattern = do
 -- >      "__sessionId": "6c0ba6f8-e478-4698-821e-356fc4a72c3d",
 -- >      "name": "thing",
 -- >      "program": "/home/dmjio/Desktop/stg-dap/test.ghc_stgapp",
+-- >      "programArguments": [],
 -- >      "request": "attach",
 -- >      "type": "dap-estgi-extension"
 -- >  }
@@ -165,8 +168,19 @@ data AttachArgs
     -- ^ SessionID from VSCode
   , program :: String
     -- ^ Path or glob pattern to .ghc_stgapp file
+  , programArguments :: [String]
+    -- ^ Arguments that ESTGi will pass to the interpreted program
+  , sharedFolderHostPath :: Maybe String
+    -- ^ Shared folder path on the host machine when the program is running in a VM container (i.e. Docker)
+  , sharedFolderContainerPath :: Maybe String
+    -- ^ Shared folder path in the container when the program is running in a VM container (i.e. Docker)
   } deriving stock (Show, Eq, Generic)
     deriving anyclass FromJSON
+
+{-
+  TODO:
+    implement launch / attach mode
+-}
 
 ----------------------------------------------------------------------------
 -- | Intialize ESTG interpreter
@@ -187,17 +201,35 @@ initESTG AttachArgs {..} = do
       liftIO $ mkFullpak programPath False False fname
       pure fname
 
-  (sourceCodeList, unitIdMap, haskellSrcPathMap) <- liftIO $ getSourceCodeListFromFullPak fullpakPath
-  (dbgAsyncI, dbgAsyncO) <- liftIO (Unagi.newChan 100)
-  dbgRequestMVar <- liftIO MVar.newEmptyMVar
-  dbgResponseMVar <- liftIO MVar.newEmptyMVar
-  let dbgChan = DebuggerChan
-        { dbgSyncRequest    = dbgRequestMVar
-        , dbgSyncResponse   = dbgResponseMVar
-        , dbgAsyncEventIn   = dbgAsyncI
-        , dbgAsyncEventOut  = dbgAsyncO
-        }
-  (graphAsyncI, graphAsyncO) <- liftIO (Unagi.newChan 100)
+  let shaderFolder = (,) <$> sharedFolderHostPath <*> sharedFolderContainerPath
+  dbgChan <- liftIO $ newDebuggerChan
+  (graphChan, estg) <- liftIO $ prepareESTG shaderFolder dbgChan fullpakPath
+  flip catch handleDebuggerExceptions $ do
+    registerNewDebugSession __sessionId estg
+      [ \_withAdaptor -> loadAndRunProgram True True fullpakPath programArguments dbgChan DbgStepByStep False defaultDebugSettings
+      , handleDebugEvents dbgChan
+      , handleGraphEvents graphChan
+      ]
+    liftIO $ registerGraphChan __sessionId graphChan
+
+newDebuggerChan :: IO DebuggerChan
+newDebuggerChan = do
+  (dbgAsyncI, dbgAsyncO) <- Unagi.newChan 100
+  dbgRequestMVar <- MVar.newEmptyMVar
+  dbgResponseMVar <- MVar.newEmptyMVar
+  pure DebuggerChan
+    { dbgSyncRequest    = dbgRequestMVar
+    , dbgSyncResponse   = dbgResponseMVar
+    , dbgAsyncEventIn   = dbgAsyncI
+    , dbgAsyncEventOut  = dbgAsyncO
+    }
+
+prepareESTG :: Maybe (FilePath, FilePath) -> DebuggerChan -> String -> IO (GraphChan, ESTG)
+prepareESTG shaderFolder dbgChan fullpakPath = do
+  liftIO $ putStrLn "prepareESTG [start]"
+  (sourceCodeList, unitIdMap, haskellSrcPathMap) <- getSourceCodeListFromFullPak fullpakPath
+  liftIO $ putStrLn "prepareESTG [end]"
+  (graphAsyncI, graphAsyncO) <- Unagi.newChan 100
   let graphChan = GraphChan
         { graphAsyncEventIn   = graphAsyncI
         , graphAsyncEventOut  = graphAsyncO
@@ -205,6 +237,7 @@ initESTG AttachArgs {..} = do
       estg = ESTG
         { debuggerChan          = dbgChan
         , fullPakPath           = fullpakPath
+        , sharedFolderMapping   = shaderFolder
         , breakpointMap         = mempty
         , sourceCodeSet         = Set.fromList sourceCodeList
         , unitIdMap             = unitIdMap
@@ -216,13 +249,10 @@ initESTG AttachArgs {..} = do
         , dapStackFrameCache    = mempty
         , nextFreshBreakpointId = 1
         }
-  flip catch handleDebuggerExceptions $ do
-    registerNewDebugSession __sessionId estg
-      [ \_withAdaptor -> loadAndRunProgram True True fullpakPath [] dbgChan DbgStepByStep False defaultDebugSettings
-      , handleDebugEvents dbgChan
-      , handleGraphEvents graphChan
-      ]
-    liftIO $ registerGraphChan __sessionId graphChan
+  pure (graphChan, estg)
+
+sendEvent :: ToJSON a => EventType -> a -> Adaptor ESTG ()
+sendEvent ev = sendSuccesfulEvent ev . setBody
 
 ----------------------------------------------------------------------------
 -- | Graph Event Handler
@@ -230,7 +260,6 @@ handleGraphEvents :: GraphChan -> (Adaptor ESTG () -> IO ()) -> IO ()
 handleGraphEvents GraphChan{..} withAdaptor = forever $ do
   graphEvent <- liftIO (Unagi.readChan graphAsyncEventOut)
   withAdaptor . flip catch handleDebuggerExceptions $ do
-    let sendEvent ev = sendSuccesfulEvent ev . setBody
     case graphEvent of
       GraphEventShowValue nodeId
         | Just programPoint <- readMaybe $ cs nodeId
@@ -264,7 +293,6 @@ handleDebugEvents DebuggerChan{..} withAdaptor = forever $ do
   dbgEvent <- liftIO (Unagi.readChan dbgAsyncEventOut)
   withAdaptor . flip catch handleDebuggerExceptions $ do
     ESTG {..} <- getDebugSession
-    let sendEvent ev = sendSuccesfulEvent ev . setBody
     case dbgEvent of
       DbgEventStopped -> do
         resetObjectLifetimes
@@ -274,6 +302,7 @@ handleDebugEvents DebuggerChan{..} withAdaptor = forever $ do
           , "allThreadsStopped"  .= True
           , "threadId"           .= Number (fromIntegral ssCurrentThreadId)
           ]
+        sendEvent (EventTypeCustom "refreshCustomViews") Null
 
       DbgEventHitBreakpoint bkpName -> do
         resetObjectLifetimes
@@ -286,6 +315,7 @@ handleDebugEvents DebuggerChan{..} withAdaptor = forever $ do
           [ "hitBreakpointIds" .= idSet
           | Just idSet <- pure $ M.lookup bkpName breakpointMap
           ]
+        sendEvent (EventTypeCustom "refreshCustomViews") Null
 
 ----------------------------------------------------------------------------
 -- | Exception Handler
@@ -315,8 +345,20 @@ talk CommandAttach = do
 ----------------------------------------------------------------------------
 talk (CustomCommand "garbageCollect") = do
   logInfo "Running garbage collection..."
+  let progressId = "estgi-gc"
+  sendProgressStartEvent $ defaultProgressStartEvent
+    { progressStartEventProgressId  = progressId
+    , progressStartEventTitle       = "Running garbage collection..."
+    }
   sendAndWait (CmdInternal "gc")
+  logInfo "Running garbage collection...done"
+  reportRegions
   sendSuccesfulEmptyResponse
+  sendProgressEndEvent $ defaultProgressEndEvent
+    { progressEndEventProgressId  = progressId
+    , progressEndEventMessage     = Just "Garbage collection finished."
+    }
+  sendEvent (EventTypeCustom "refreshCustomViews") Null
 ----------------------------------------------------------------------------
 talk CommandContinue = do
   ESTG {..} <- getDebugSession
@@ -353,9 +395,15 @@ talk (CustomCommand "getSourceLinks") = customCommandGetSourceLinks
 ----------------------------------------------------------------------------
 talk (CustomCommand "selectVariableGraphNode") = customCommandSelectVariableGraphNode
 ----------------------------------------------------------------------------
+talk (CustomCommand "showRetainerGraph") = customCommandShowRetainerGraph
+----------------------------------------------------------------------------
 talk (CustomCommand "showVariableGraphStructure") = customCommandShowVariableGraphStructure
 ----------------------------------------------------------------------------
 talk (CustomCommand "showCallGraph") = customCommandShowCallGraph
+----------------------------------------------------------------------------
+talk (CustomCommand "regions") = customCommandRegions
+----------------------------------------------------------------------------
+talk (CustomCommand "regionInstances") = customCommandRegionInstances
 ----------------------------------------------------------------------------
 talk CommandModules = do
   sendModulesResponse (ModulesResponse [] Nothing)
@@ -403,7 +451,7 @@ talk CommandVariables = do
             | otherwise
             = v {variableName = variableName v <> " <also-shown-in-ancestor>"}
       sendVariablesResponse (VariablesResponse $ map markLoop variables)
-    Nothing -> do
+    _ -> do
       sendVariablesResponse (VariablesResponse [])
 ----------------------------------------------------------------------------
 talk CommandNext = do

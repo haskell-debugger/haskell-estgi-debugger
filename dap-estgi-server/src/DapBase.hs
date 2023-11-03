@@ -87,6 +87,7 @@ data ValueRoot
 data DapVariablesRefDescriptor
   = VariablesRef_StackFrameVariables  DapFrameIdDescriptor
   | VariablesRef_Value                ValueRoot RefNamespace Int
+  | VariablesRef_RegionInstance       Stg.Region Int
   deriving (Show, Eq, Ord)
 
 data SourceCodeDescriptor
@@ -106,13 +107,14 @@ data SourceCodeDescriptor
 -- | External STG Interpreter application internal state
 data ESTG
   = ESTG
-  { debuggerChan      :: DebuggerChan
-  , fullPakPath       :: String
-  , breakpointMap     :: Map Stg.Breakpoint IntSet
-  , sourceCodeSet     :: Set SourceCodeDescriptor
-  , unitIdMap         :: Bimap UnitId PackageName
-  , haskellSrcPathMap :: Bimap Name SourceCodeDescriptor
-  , dapSourceNameMap  :: Bimap Text SourceCodeDescriptor
+  { debuggerChan          :: DebuggerChan
+  , fullPakPath           :: String
+  , sharedFolderMapping   :: Maybe (FilePath, FilePath) -- host absolute path, container absolute path
+  , breakpointMap         :: Map Stg.Breakpoint IntSet
+  , sourceCodeSet         :: Set SourceCodeDescriptor
+  , unitIdMap             :: Bimap UnitId PackageName
+  , haskellSrcPathMap     :: Bimap Name SourceCodeDescriptor
+  , dapSourceNameMap      :: Bimap Text SourceCodeDescriptor
 
   -- application specific resource handling
 
