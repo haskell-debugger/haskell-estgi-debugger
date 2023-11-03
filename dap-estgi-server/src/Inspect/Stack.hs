@@ -56,11 +56,13 @@ getScopesForStackContinuation frameIdDesc stackCont = do
   scopeVarablesRef <- getVariablesRef $ VariablesRef_StackFrameVariables frameIdDesc
   let scope = defaultScope
         { scopeName = "Locals"
+        , scopeExpensive = True
         , scopePresentationHint = Just ScopePresentationHintLocals
         , scopeVariablesReference = scopeVarablesRef
         }
   scopeWithSourceLoc <- case stackCont of
     CaseOf _ closureId _ _ _ _ -> do
+      -- Q: do we need scope source positions?
       (source, line, column, endLine, endColumn) <- getSourceAndPositionForStgPoint (SP_RhsClosureExpr (binderToStgId . unId $ closureId))
       pure scope
         { scopeSource = source
@@ -78,10 +80,12 @@ getScopesForTopStackFrame
   -> Adaptor ESTG [Scope]
 getScopesForTopStackFrame frameIdDesc closureId = do
   scopeVarablesRef <- getVariablesRef $ VariablesRef_StackFrameVariables frameIdDesc
+  -- Q: do we need scope source positions?
   (source, line, column, endLine, endColumn) <- getSourceAndPositionForStgPoint (SP_RhsClosureExpr . binderToStgId $ unId closureId)
   pure
     [ defaultScope
       { scopeName = "Locals"
+      , scopeExpensive = True
       , scopePresentationHint = Just ScopePresentationHintLocals
       , scopeVariablesReference = scopeVarablesRef
       , scopeSource = source
@@ -129,6 +133,7 @@ commandStackTrace = do
         Just currentClosureId
           | ssCurrentThreadId == stackTraceArgumentsThreadId
           -> do
+          -- Q: do we need stack source positions?
           (source, line, column, endLine, endColumn) <- getSourceAndPositionForStgPoint (SP_RhsClosureExpr . binderToStgId $ unId currentClosureId)
           frameId <- getFrameId FrameId_CurrentThreadTopStackFrame
           pure [ defaultStackFrame
@@ -151,6 +156,7 @@ commandStackTrace = do
         case stackCont of
           CaseOf _ closureId _ scrutResultId _ _ -> do
             -- HINT: use the case scrutinee result's unique binder id to lookup source location info
+            -- Q: do we need stack source positions?
             (source, line, column, endLine, endColumn) <- getSourceAndPositionForStgPoint (SP_CaseScrutineeExpr . binderToStgId $ unId scrutResultId)
             pure $ defaultStackFrame
               { stackFrameId        = frameId
