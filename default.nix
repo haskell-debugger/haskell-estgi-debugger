@@ -24,7 +24,8 @@ let
       buildPhase = ''
         mkdir -pv $out/bin
         g++ -fopenmp $src/datalog/ext-stg-gc.cpp \
-           -D_OPENMP -std=c++17 \
+           -Wl,-u,__factory_Sf_ext_stg_gc_instance \
+           -std=c++17 \
            -o $out/bin/ext-stg-gc
       '';
     };

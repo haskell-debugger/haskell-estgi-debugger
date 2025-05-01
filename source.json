@@ -26,10 +26,10 @@
   "ghc-whole-program-compiler-project": {
     "fetchSubmodules": true,
     "leaveDotGit": false,
-    "owner": "dmjio",
+    "owner": "haskell-debugger",
     "repo": "ghc-whole-program-compiler-project",
-    "rev": "d058105b0bee1ab2e7c7aefd36bf9e0be6e840b7",
-    "sha256": "sha256-lNNZRaJwHVPRi59pXEsWzxGrOJqwiAR2g56khKq8bic="
+    "rev": "65ecaed",
+    "sha256": "sha256-T9dUWUrGeva8ghwQ5Pu1paBbBgyjoTp3SQreHs94WRQ="
   },
   "souffle-haskell" : {
     "owner" : "luc-tielen",
