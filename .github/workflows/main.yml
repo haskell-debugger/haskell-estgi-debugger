@@ -26,7 +26,7 @@ jobs:
        run: cabal update
 
      - name: Install ghc, bzip2 and zlib as build-time dependencies
-       run: nix-env -iA pkgs.ghc pkgs.bzip2.dev pkgs.zlib.dev -f .
+       run: nix-env -iA pkgs.ghc pkgs.bzip2.dev pkgs.zlib.dev pkgs.zstd.dev -f .
 
      - name: (x86 - C++) Build ext-stg-gc (souffle-produced reachability analysis for GC)
        run: nix-build -A ext-stg-gc
