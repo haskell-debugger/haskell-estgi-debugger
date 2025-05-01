@@ -25,9 +25,6 @@ jobs:
      - name: Cabal update
        run: cabal update
 
-     - name: Install ghc, bzip2 and zlib as build-time dependencies
-       run: nix-env -iA pkgs.ghc pkgs.bzip2.dev pkgs.zlib.dev pkgs.zstd.dev -f .
-
      - name: (x86 - C++) Build ext-stg-gc (souffle-produced reachability analysis for GC)
        run: nix-build -A ext-stg-gc
 
@@ -35,5 +32,5 @@ jobs:
        run: nix-build -A dap-estgi-server
 
      - name: (x86 - GHC 9.6.6) Build dap-estgi-server w/ cabal
-       run: cabal build dap-estgi-server
+       run:  nix-shell -p pkgs.ghc -p pkgs.bzip2.dev -p pkgs.zlib.dev --run 'cabal build dap-estgi-server' -I=.
 
