@@ -1,4 +1,5 @@
-# Haskell ESTGi Debugger
+# Haskell ESTGi Debugger ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/haskell-debugger/haskell-estgi-debugger/main.yml?style=flat-square)
+
 
 # Table of Contents
 1. [Introduction](#introduction)
