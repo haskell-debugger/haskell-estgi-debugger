@@ -36,4 +36,7 @@ package external-stg-interpreter
 package external-stg-compiler
   flags: +external-ext-stg-liveness
 
+package digest
+  flags: -pkg-config
+
 allow-newer: type-errors-pretty:base
