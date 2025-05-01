@@ -31,8 +31,9 @@ jobs:
      - name: (x86 - C++) Build ext-stg-gc (souffle-produced reachability analysis for GC)
        run: nix-build -A ext-stg-gc
 
+     - name: (x86 - GHC 9.6.6) Build dap-estgi-server w/ nix
+       run: nix-build -A dap-estgi-server
+
      - name: (x86 - GHC 9.6.6) Build dap-estgi-server w/ cabal
        run: cabal build dap-estgi-server
 
-     - name: (x86 - GHC 9.6.6) Build dap-estgi-server w/ nix
-       run: nix-build -A dap-estgi-server
