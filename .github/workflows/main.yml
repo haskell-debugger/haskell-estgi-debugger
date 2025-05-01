@@ -31,6 +31,5 @@ jobs:
      - name: (x86 - GHC 9.6.6) Build dap-estgi-server w/ nix
        run: nix-build -A dap-estgi-server
 
-     - name: (x86 - GHC 9.6.6) Build dap-estgi-server w/ cabal
-       run:  nix-shell -p pkgs.ghc -p pkgs.bzip2.dev -p pkgs.zlib.dev --run 'cabal build dap-estgi-server' -I=.
-
+     # - name: (x86 - GHC 9.6.6) Build dap-estgi-server w/ cabal
+     #   run:  nix-shell -p pkgs.ghc -p pkgs.bzip2.dev -p pkgs.zlib.dev --run 'cabal build dap-estgi-server' -I=.
