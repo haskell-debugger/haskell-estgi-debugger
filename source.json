@@ -1,0 +1,47 @@
+{
+  "dap": {
+    "fetchSubmodules": true,
+    "leaveDotGit": false,
+    "owner": "haskell-debugger",
+    "repo": "dap",
+    "rev": "56d44d27c0cc509fc3e8198de448dbb2e9a6380f",
+    "sha256": "sha256-/FKfSyYJuzXqyBu/yFTlVBQYJ4SXgLGDzQ5xAdXajCE="
+  },
+  "digest": {
+    "fetchSubmodules": true,
+    "leaveDotGit": false,
+    "owner": "TeofilC",
+    "repo": "digest",
+    "rev": "ac9616b94cb8c4a9e07188d19979a6225ebd5a10",
+    "sha256": "sha256-2n2SV4GYAwd09QfWynlxgeCrsj49UI3He6X66ynqfSA="
+  },
+  "final-pretty-printer": {
+    "fetchSubmodules": true,
+    "leaveDotGit": false,
+    "owner": "david-christiansen",
+    "repo": "final-pretty-printer",
+    "rev": "048e8fa2d8b2b7a6f9e4e209db4f67361321eec8",
+    "sha256": "0d5ya1n85qgs59p2wlx501qa1nrlk7y20riydfknfqkr0fswcpnf"
+  },
+  "ghc-whole-program-compiler-project": {
+    "fetchSubmodules": true,
+    "leaveDotGit": false,
+    "owner": "dmjio",
+    "repo": "ghc-whole-program-compiler-project",
+    "rev": "d058105b0bee1ab2e7c7aefd36bf9e0be6e840b7",
+    "sha256": "sha256-lNNZRaJwHVPRi59pXEsWzxGrOJqwiAR2g56khKq8bic="
+  },
+  "souffle-haskell" : {
+    "owner" : "luc-tielen",
+    "repo" : "souffle-haskell",
+    "rev" : "268a11283ca9293b5eacabf7a0b79d9368232478",
+    "hash" : "sha256-n8qqNmrDNxLlM7FRfa1Da58jGCNWjBp9+B/yV3U98gg="
+  },
+  "type-errors-pretty": {
+    "fetchSubmodules": false,
+    "owner": "kowainik",
+    "repo": "type-errors-pretty",
+    "rev": "c85d6d0a7bf2278ddb03abddb5782a5b6095d343",
+    "sha256": "1yylw5c8ffzybcv7cm6ff0k88an4iz0fhc59md09s9zlns03f3d0"
+  }
+}

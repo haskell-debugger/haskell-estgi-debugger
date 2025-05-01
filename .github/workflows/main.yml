@@ -1,0 +1,34 @@
+name: Haskell Debugger CI
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.ref != 'refs/heads/master'
+    steps:
+     - uses: DeterminateSystems/nix-installer-action@main
+
+     - name: Nix channel update
+       run: nix-channel --update
+
+     - name: Cabal install
+       run: nix-env -iA cabal-install -f .
+
+     - name: Cabal update
+       run: cabal update
+
+     - name: Install ghc, bzip2 and zlib as build-time dependencies
+       run: nix-env -iA pkgs.ghc pkgs.bzip2.dev pkgs.zlib.dev -f .
+
+     - name: (x86 - C++) Build ext-stg-gc (souffle-produced reachability analysis for GC)
+       run: nix-build -A ext-stg-gc
+
+     - name: (x86 - GHC 9.6.6) Build dap-estgi-server w/ cabal
+       run: cabal build dap-estgi-server
+
+     - name: (x86 - GHC 9.6.6) Build dap-estgi-server w/ nix
+       run: nix-build -A dap-estgi-server
